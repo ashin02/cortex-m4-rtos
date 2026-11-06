@@ -1,33 +1,59 @@
-/*
- * AeroRT - Cortex-M4 exception and fault hooks
- *
- * Purpose:
- *   Provide architecture-owned exception entry points and a minimal diagnostic
- *   bridge while leaving recovery policy to higher layers.
- *
- * Responsibilities:
- *   SVC dispatch/startup support, exception configuration, and bounded fault-state
- *   capture for HardFault, MemManage, BusFault, and UsageFault.
- *
- * Expected dependencies:
- *   Port startup services, Cortex-M fault/status registers, and a future crash
- *   record sink with static storage.
- *
- * TODO:
- *   [ ] Decode supported SVC operations and reject calls from invalid contexts.
- *   [ ] Enable configurable faults and define exception priorities coherently.
- *   [ ] Capture MSP/PSP selection, stacked registers, fault status/address registers,
- *       and reset reason with minimal, recursion-safe handler code.
- *   [ ] Add a future versioned crash-record format that survives reset when the
- *       linker/startup design supplies suitable reserved memory.
- *   [ ] Hand fault facts to system policy without running logging or recovery logic
- *       inside exception context.
- *   [ ] Define terminal behavior for corrupt-stack and nested-fault cases.
- *
- * Non-goals:
- *   Flight failsafe decisions, verbose UART output, or context-switch policy.
- *
- * Validation:
- *   Inject each configurable fault, verify captured frames/status, test handler-mode
- *   faults, and inspect behavior when PSP contents are invalid.
- */
+#include <stdint.h>
+
+#include "aerortos/cortex_m4.h"
+#include "aerortos/platform.h"
+
+enum {
+    FAULT_NMI = 2UL,
+    FAULT_HARD = 3UL,
+    FAULT_MEMMANAGE = 4UL,
+    FAULT_BUS = 5UL,
+    FAULT_USAGE = 6UL,
+    FAULT_UNHANDLED_IRQ = 0xFFFFFFFFUL
+};
+
+volatile uint32_t aerortos_fault_code;
+
+void platform_panic(uint32_t code)
+{
+    aerortos_disable_irq();
+    aerortos_fault_code = code;
+
+    if ((AERORTOS_DHCSR & AERORTOS_DHCSR_C_DEBUGEN_Msk) != 0UL) {
+        __asm volatile ("bkpt 0");
+    }
+
+    for (;;) {
+        aerortos_wait_for_interrupt();
+    }
+}
+
+void Default_Handler(void)
+{
+    platform_panic(FAULT_UNHANDLED_IRQ);
+}
+
+void NMI_Handler(void)
+{
+    platform_panic(FAULT_NMI);
+}
+
+void HardFault_Handler(void)
+{
+    platform_panic(FAULT_HARD);
+}
+
+void MemManage_Handler(void)
+{
+    platform_panic(FAULT_MEMMANAGE);
+}
+
+void BusFault_Handler(void)
+{
+    platform_panic(FAULT_BUS);
+}
+
+void UsageFault_Handler(void)
+{
+    platform_panic(FAULT_USAGE);
+}
