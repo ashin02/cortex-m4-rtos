@@ -112,6 +112,16 @@ aerortos_task_result_t aerortos_task_create(
     if (config->priority >= AERORTOS_PRIORITY_COUNT) {
         return AERORTOS_TASK_ERROR_PRIORITY;
     }
+    if (((config->period_ticks == 0U) &&
+         ((config->relative_deadline_ticks != 0U) ||
+          (config->initial_release_delay_ticks != 0U))) ||
+        ((config->period_ticks != 0U) &&
+         ((config->period_ticks > AERORTOS_MAX_RELATIVE_TICKS) ||
+          (config->relative_deadline_ticks == 0U) ||
+          (config->relative_deadline_ticks > AERORTOS_MAX_RELATIVE_TICKS) ||
+          (config->initial_release_delay_ticks > AERORTOS_MAX_RELATIVE_TICKS)))) {
+        return AERORTOS_TASK_ERROR_TIMING;
+    }
 
     stack_end = stack_start + config->stack_size_bytes;
     for (index = 0U; index < AERORTOS_TASK_CAPACITY; ++index) {
@@ -152,6 +162,9 @@ aerortos_task_result_t aerortos_task_create(
     task->state = AERORTOS_TASK_READY;
     task->slot = (uint8_t)(task - &task_pool[0]);
     task->id = next_task_id;
+    task->period_ticks = config->period_ticks;
+    task->relative_deadline_ticks = config->relative_deadline_ticks;
+    task->initial_release_delay_ticks = config->initial_release_delay_ticks;
 
     if (!aerortos_port_build_initial_frame(task->stack_low, task->stack_words,
                                            task->entry, task->argument,
@@ -191,6 +204,7 @@ aerortos_task_result_t aerortos_task_transition(
     if (next_state != AERORTOS_TASK_BLOCKED) {
         task->wait_object = NULL;
         task->wake_tick = 0U;
+        task->wait_kind = (uint8_t)AERORTOS_WAIT_NONE;
     }
     return AERORTOS_TASK_OK;
 }

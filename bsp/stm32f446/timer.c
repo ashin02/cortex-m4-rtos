@@ -1,31 +1,47 @@
-/*
- * AeroRT - STM32F446 high-resolution timers
- *
- * Purpose:
- *   Provide the hardware side of the monotonic-clock and tickless next-event API.
- *
- * Responsibilities:
- *   TIM2 free-running microsecond-scale time, TIM5 one-shot/compare wake events,
- *   minimal IRQ acknowledgement, and handoff to the kernel timer subsystem.
- *
- * Expected dependencies:
- *   BSP clock frequencies, STM32 timer/NVIC registers, arch interrupt rules, and a
- *   narrow portable kernel timer callback.
- *
- * TODO:
- *   [ ] Configure TIM2 as a free-running monotonic counter, likely near 1 MHz, only
- *       after deriving an exact prescaler from the verified timer clock.
- *   [ ] Extend or formally constrain the timestamp range and handle counter wrap.
- *   [ ] Configure TIM5 compare/one-shot operation for the next kernel event.
- *   [ ] Program past/near-future events without losing wakeups to compare races.
- *   [ ] In the IRQ, clear only relevant flags, capture time, and invoke a bounded
- *       kernel timer handoff that may request PendSV.
- *   [ ] Define timer IRQ priority within the kernel-aware interrupt band.
- *
- * Non-goals:
- *   Delayed-task heap management, periodic policy, or blocking inside an ISR.
- *
- * Validation:
- *   Measure monotonicity/resolution, compare latency, wrap behavior, race windows,
- *   and long idle intervals with DWT/GPIO and a logic analyzer.
- */
+#include <stdbool.h>
+#include <stdint.h>
+
+#include "aerortos/cortex_m4.h"
+#include "aerortos/critical_section.h"
+#include "aerortos/platform.h"
+#include "aerortos/timer.h"
+
+volatile uint32_t aerortos_systick_irq_count;
+
+bool aerortos_systick_init(void)
+{
+    const uint32_t reload = SystemCoreClock / AERORTOS_TICK_HZ;
+
+    if ((SystemCoreClock % AERORTOS_TICK_HZ) != 0U ||
+        (reload == 0U) || (reload > UINT32_C(0x01000000))) {
+        return false;
+    }
+
+    AERORTOS_SCB_SHPR3 = (AERORTOS_SCB_SHPR3 & UINT32_C(0x00FFFFFF)) |
+                         (AERORTOS_KERNEL_BASEPRI << 24);
+    aerortos_systick_irq_count = 0U;
+    AERORTOS_SYSTICK->CTRL = 0U;
+    AERORTOS_SYSTICK->LOAD = reload - 1U;
+    AERORTOS_SYSTICK->VAL = 0U;
+    AERORTOS_SYSTICK->CTRL = AERORTOS_SYSTICK_CTRL_CLKSOURCE_Msk |
+                             AERORTOS_SYSTICK_CTRL_TICKINT_Msk |
+                             AERORTOS_SYSTICK_CTRL_ENABLE_Msk;
+    return true;
+}
+
+bool systick_heartbeat_init(void)
+{
+    aerortos_time_system_init(0U);
+    return aerortos_systick_init();
+}
+
+uint32_t bsp_millis(void)
+{
+    return aerortos_tick_now();
+}
+
+void SysTick_Handler(void)
+{
+    ++aerortos_systick_irq_count;
+    aerortos_timer_tick_isr();
+}

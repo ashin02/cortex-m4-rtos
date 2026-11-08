@@ -124,6 +124,16 @@ static void test_invalid_creation(void)
     config = make_config(stack, TEST_STACK_WORDS,
                          (uint8_t)AERORTOS_PRIORITY_COUNT, NULL);
     assert(aerortos_task_create(&config, &task) == AERORTOS_TASK_ERROR_PRIORITY);
+
+    config = make_config(stack, TEST_STACK_WORDS, 0U, NULL);
+    config.relative_deadline_ticks = 1U;
+    assert(aerortos_task_create(&config, &task) == AERORTOS_TASK_ERROR_TIMING);
+    config.period_ticks = 5U;
+    config.relative_deadline_ticks = 0U;
+    assert(aerortos_task_create(&config, &task) == AERORTOS_TASK_ERROR_TIMING);
+    config.relative_deadline_ticks = 5U;
+    config.initial_release_delay_ticks = AERORTOS_MAX_RELATIVE_TICKS + 1U;
+    assert(aerortos_task_create(&config, &task) == AERORTOS_TASK_ERROR_TIMING);
     assert(aerortos_task_count() == 0U);
 }
 

@@ -22,5 +22,7 @@ void MemManage_Handler(void) __attribute__((noreturn));
 void BusFault_Handler(void) __attribute__((noreturn));
 void UsageFault_Handler(void) __attribute__((noreturn));
 void SysTick_Handler(void);
+void SVC_Handler(void);
+void PendSV_Handler(void);
 
 #endif

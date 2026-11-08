@@ -4,44 +4,67 @@
 
 AeroRTOS is intended to be a small fixed-priority preemptive RTOS for an ST
 NUCLEO-F446RE / STM32F446RET6 / Cortex-M4F (`README.md`, `bsp/stm32f446/`,
-`arch/cortex_m4/`). The target is encoded in the M1 build and linker configuration
-but is not yet confirmed by a running hardware image.
+`arch/cortex_m4/`). The target is encoded in the build/linker configuration and is
+confirmed by the passing isolated M5 image on a physical NUCLEO-F446RE.
 
 Audit baseline (2026-11-05, commit `3dd24e5`) found only comment/TODO scaffolds.
-M1 provides a buildable startup/heartbeat image, and M2 provides host-tested static
-TCBs and initial integer task frames. Neither has been inspected on hardware. The
-scheduler, context switch, synchronization, flight, and remaining test files are
-still comment-only. Never treat a comment, compile, or roadmap entry as runtime
-verification.
+M1 provides startup support, M2 provides static TCBs and initial integer frames,
+M3/M4 provide the bitmap scheduler and BASEPRI critical sections, and M5 provides
+SVC launch plus PendSV switching. The isolated M5 image passed twice under debugger
+reset with 157 checks, zero failures, and 130 switches on STM32F446RE. M6 implements
+a 1 kHz SysTick, periodic release/deadline policy, bounded timing statistics, and an
+isolated acceptance image that passed twice on STM32F446RE under debugger reset (49
+checks, zero failures, one deliberate deadline miss, and verified 4 ms/5 ms releases
+across 32-bit tick wrap). Overrun and skipped-release hardware coverage remains
+absent; retain its host-test evidence separately. M7 caller-owned bounded message
+queues passed twice on STM32F446RE after the test-only completion handshake fix (40
+checks, zero failures, one preemption, one blocked send, two blocked receives, and
+the expected nine-event trace). M8 bounded non-recursive priority-inheritance mutexes
+passed their isolated physical STM32F446RE acceptance image and debugger-reset rerun
+(43 checks, zero failures, one boost/restoration/block/preemption, and the expected
+nine-event trace). Multiple mutex ownership, transitive PI, and M7 wait-list
+reordering remain host/sanitizer-only evidence. Calibrated performance measurement,
+flight, and later tests remain scaffolds. Never generalize isolated M5-M8 hardware
+evidence beyond its recorded scope.
 
 ## Navigation map
 
 | Path | Responsibility / symbols |
 |---|---|
-| `Makefile` | Strict soft-float Cortex-M4 build; `all`, `verify`, `flash`, `openocd`, `gdb`, `clean` |
+| `Makefile` | Strict soft-float Cortex-M4 build; host/sanitizer suites; default plus isolated M5/M6/M7/M8 target images |
 | `linker/stm32f446re.ld` | 512 KiB Flash/128 KiB SRAM layout; vector/MSP/RAM assertions |
-| `startup/startup_stm32f446re.S` | `_vector_table`, `Reset_Handler`, `.data` copy, `.bss` clear, weak IRQ defaults |
+| `startup/startup_stm32f446re.S` | `_vector_table`, explicit Flash VTOR, C data init, weak unused-IRQ defaults; SysTick must resolve strongly |
 | `include/aerortos/{cortex_m4,stm32f446re,platform}.h` | Minimal project-owned core/device registers and M1 BSP API |
-| `app/main.c` | `main`; initializes clock, one non-running M2 smoke TCB/frame, LD2, heartbeat SysTick |
-| `arch/cortex_m4/context_switch.S` | PendSV context save/restore; no handler exists yet |
-| `arch/cortex_m4/port.c` | `aerortos_port_build_initial_frame`, `aerortos_task_return_trap`; no launch/PendSV code |
-| `arch/cortex_m4/critical_section.c` | Nested BASEPRI protection; no functions yet |
+| `app/main.c` | Default M6 image: 1 kHz SysTick, idle, heartbeat and peer periodic tasks, SVC scheduler start |
+| `arch/cortex_m4/context_switch.S` | `SVC_Handler`, `PendSV_Handler`; PSP R4-R11 restore/save and fixed basic-frame exception return |
+| `arch/cortex_m4/port.c` | Initial frame, exception priorities, PendSV request, SVC launch, handler-mode query |
+| `arch/cortex_m4/critical_section.c` | `aerortos_critical_enter/exit`; nested prior-BASEPRI restoration |
 | `arch/cortex_m4/exception.c` | `platform_panic`, default/NMI/HardFault/MemManage/BusFault/UsageFault terminal handlers |
-| `include/aerortos/task.h` | `aerortos_task_t`, config/result/state types, capacity/stack contracts, task API |
+| `include/aerortos/task.h` | Static TCB/config API, base/effective priority, wait kind, owned mutexes, periodic counters, and bounded timing-event ring |
+| `include/aerortos/scheduler.h` | Scheduler add/start/yield/block/wake/switch and effective-priority reposition APIs |
+| `include/aerortos/critical_section.h` | Kernel BASEPRI threshold and saved-state critical-section API |
+| `include/aerortos/timer.h`, `deadline.h` | Wrap-safe tick/periodic-wait APIs and internal deadline accounting hooks |
+| `include/aerortos/queue.h` | Caller-owned fixed-capacity FIFO, try/blocking APIs, results, and diagnostics |
+| `include/aerortos/mutex.h` | Caller-owned non-recursive PI mutex, try/blocking lock, owner unlock, results, and diagnostics |
 | `include/aerortos/port.h`, `tcb_offsets.h` | Initial frame types/constants and target C/assembly TCB ABI offsets |
 | `kernel/task.c` | Eight-slot static TCB pool, create/transition/release, stack guards/high-water scan |
-| `kernel/scheduler.c` | Fixed-priority FIFO ready queues, bitmap selection, idle/preemption policy |
-| `kernel/timer.c`, `kernel/deadline.c` | Periodic release, timeouts, deadline/miss accounting |
-| `kernel/queue.c`, `kernel/mutex.c` | Bounded queues and priority-inheritance mutexes |
+| `kernel/scheduler.c` | Fixed-priority FIFO queues, bitmap selection, priority repositioning, idle/preemption policy, PendSV C handoff |
+| `kernel/timer.c`, `kernel/deadline.c` | 32-bit time, bounded periodic scan/release, deadline/overrun/execution/jitter accounting |
+| `kernel/queue.c` | BASEPRI-protected ring buffer and effective-priority/FIFO sender/receiver wait lists, including PI reordering |
+| `kernel/mutex.c` | BASEPRI-protected ownership, priority/FIFO waiters, bounded transitive PI, restoration, handoff, and cycle rejection |
 | `kernel/semaphore.c` | Optional semaphore support; not required by current resume scope |
 | `kernel/monitor.c` | Runtime, stack, latency, jitter, and deadline instrumentation |
-| `bsp/stm32f446/clock.c` | `system_clock_init` (16 MHz HSI), M1-only heartbeat SysTick and `bsp_millis` |
+| `bsp/stm32f446/clock.c` | `system_clock_init` (16 MHz HSI) and explicit Flash VTOR setup |
 | `bsp/stm32f446/gpio.c` | `gpio_led_init`, `gpio_led_toggle` for NUCLEO LD2 on PA5 |
-| `bsp/stm32f446/timer.c` | Future RTOS tick/time base; still comments only |
+| `bsp/stm32f446/timer.c` | Exact 1 kHz SysTick configuration/handler and legacy `bsp_millis` wrapper |
 | `bsp/stm32f446/{spi_dma,uart_dma,pwm,watchdog}.c` | Optional BSP work; implement only when a required test/workload needs it |
 | `flight/*.c` | Proposed application modules; final scope is a minimal flight-like workload, not a full controller |
-| `tests/task_test.c`, `tests/host/platform_stub.c` | Executable M2 lifecycle, capacity, stack, frame, and guard tests |
-| Other `tests/*.c` | Test specifications only; add executable tests with their owning milestone |
+| `tests/{task,scheduler,context_switch,deadline}_test.c` | Host lifecycle, switching, periodic phase/wrap/miss/overrun/jitter regression |
+| `tests/target/m5_*` | Isolated target test, R4-R11 probe, PASS/FAIL counters, trace, ISR wake, idle fallback |
+| `tests/target/m6_periodic_test.c` | Isolated wrap/release/preemption/miss/recovery test with GDB counters and traces |
+| `tests/queue_test.c`, `tests/target/m7_queue_test.c` | Host queue edge/contention regression and isolated target blocking/preemption image |
+| `tests/mutex_test.c`, `tests/target/m8_mutex_test.c` | Host PI/restoration/queue-integration regression and isolated inversion/PI target image |
+| Other `tests/*.c` | Later-milestone test specifications only |
 | `roadmap.md` | Status, decisions, milestones, risks, and verification evidence |
 
 Update this table with actual public types, entry points, handlers, and commands as
@@ -49,27 +72,64 @@ they are implemented. Remove stale navigation facts promptly.
 
 ## Architecture boundaries and invariants
 
-Current M1 flow: `initial MSP/vector -> Reset_Handler -> copy .data -> clear .bss ->
-main -> 16 MHz HSI -> construct one non-running M2 smoke task -> PA5 output -> 1 kHz
-heartbeat-only SysTick -> LD2 toggle at 1 Hz -> WFI`. The smoke TCB/frame exists for
-debugger inspection only; no SVC launch, PSP use, scheduling, or PendSV switching
-exists yet.
+Current default flow: `initial MSP/vector -> Reset_Handler -> C init -> main -> 16
+MHz HSI -> create idle and periodic tasks -> initialize 1 kHz SysTick -> scheduler
+select -> SVC -> Thread/PSP -> task periodic wait -> PendSV -> idle/next task`.
+SysTick advances the monotonic tick, accounts the running job, scans at most eight
+registered periodic tasks, releases due jobs, and requests PendSV when a released
+task outranks the running task. Handlers use MSP; tasks use caller-owned PSP stacks.
 
-M2 frame layout from low to high address: `R4-R11` software frame, then hardware
+Frame layout from low to high address: `R4-R11` software frame, then hardware
 `R0-R3, R12, LR, PC, xPSR`; `saved_psp` points at R4. Stacked PC has bit 0 clear,
-xPSR has Thumb bit 24 set, and LR is the odd-address task-return trap. The fixed
-integer-only exception-return value is deferred to M5 launch/switch code.
+xPSR has Thumb bit 24 set, and LR is the odd-address task-return trap. SVC/PendSV use
+the fixed integer-only Thread/PSP basic-frame return value `0xFFFFFFFD`.
 
 - Portable `kernel/` code must not access STM32 registers. `arch/` owns Cortex-M
   mechanisms; `bsp/` owns board peripherals; `flight/` uses public RTOS/BSP APIs.
-- Implement and test BASEPRI protection before enabling interrupt-driven
-  preemption. Only kernel-aware IRQ priorities may call ISR-safe kernel APIs.
+- STM32F446 implements four priority bits. BASEPRI `0x40` masks kernel-aware
+  interrupts during scheduler mutation; SVC is `0x20`, PendSV is implemented-lowest
+  `0xF0`, and only IRQ priorities encoded `0x40` or greater (less urgent) may call
+  ISR-safe APIs. `make verify` checks the actual BASEPRI assembly operand separation.
 - Preserve AAPCS, 8-byte stack alignment, Thumb xPSR, EXC_RETURN, PSP/MSP roles,
   and the selected FPU-context policy. Bind C/assembly TCB offsets at build time.
 - A task/list node has one owner. State, list, and ready-bitmap updates are atomic.
   Signal/timeout races remove and wake a waiter exactly once.
-- M2 lifecycle calls are single-threaded and not scheduler-integrated. M3 must make
-  the scheduler own READY/RUNNING/list transitions before any concurrent use.
+- Direct M2 lifecycle transitions remain pre-scheduling/test-only. Once registered,
+  scheduler APIs own READY/RUNNING/BLOCKED transitions and ready-list membership.
+- Yield/block are Thread-only. Wake/add are bounded under BASEPRI; an ISR wake may
+  pend PendSV, which runs only after higher-priority handler work and masking end.
+- Period/deadline/initial-delay values are at most `INT32_MAX` ticks. Wrap-safe
+  signed-difference ordering is valid within that half-range; `next_release +=
+  period` preserves phase across 32-bit wrap without cumulative drift.
+- Each periodic task has at most one active job and no backlog. A task completes its
+  job by calling `aerortos_periodic_wait_next()`. If the next phase arrives first,
+  that release is skipped and overrun/skipped counters advance; the phase still
+  advances. A miss is recorded once when an active job is observed strictly after
+  its absolute deadline, so completion at the deadline tick is on time.
+- Ready selection remains O(1). Each SysTick performs one fixed-capacity scan of at
+  most eight periodic TCB pointers; timing history is an overwrite-on-full ring of
+  eight events per task. Execution and jitter values have 1 ms resolution and are
+  functional statistics, not M10 calibrated latency measurements.
+- Queue control blocks and payload buffers are caller-owned for their full lifetime.
+  Ring updates are O(1), copies are O(element size) under BASEPRI, and priority/FIFO
+  waiter insertion scans at most eight tasks. Blocking queue calls are Thread-only;
+  try operations may run in Thread mode or permitted kernel-aware ISRs. Queue waits
+  are indefinite in M7: there are no timed waits, cancellation, or deletion APIs.
+- A queue-blocked task uses its intrusive links exclusively in one queue wait list.
+  The queue removes and clears the waiter before scheduler wakeup; direct lifecycle
+  transitions and queue reinitialization are forbidden while waiters exist.
+- Mutex objects are caller-owned, explicitly initialized, non-recursive, and
+  task-context only. Unlock is owner-only. A task may own at most eight mutexes;
+  waits are indefinite and there is no cancellation, deletion, or timed lock.
+- TCB base priority is immutable after creation; effective priority is the minimum
+  numeric priority donated by the head waiters of all owned mutexes, or base when
+  undonated. Priority/FIFO mutex waiters preserve FIFO within equal effective
+  priorities. Priority changes atomically reposition READY, mutex-blocked, and
+  queue-blocked tasks under BASEPRI.
+- PI propagation, restoration, ownership scans, wait-list insertion/reordering, and
+  deadlock-chain inspection are bounded by the eight-task/eight-owned-mutex limits.
+  Cyclic acquisition is rejected. PI mitigates inversion but does not establish an
+  application blocking-time bound without acquisition/critical-section analysis.
 - Use static/caller-owned storage with configured bounds and explicit exhaustion.
   No runtime heap allocation in the kernel.
 - O(1) claims cover only fixed-width highest-priority selection and intrusive
@@ -88,6 +148,21 @@ Commands from the repository root:
 - Optional ASan/UBSan host run: `make test-sanitize` (non-PIE; leak detection is
   disabled because it is unsupported in the current container)
 - Artifact/binutils inspection: `make verify`
+- Isolated M5 target build/disassembly: `make m5-hardware-test`
+- Flash isolated M5 image: `make flash-m5-test`
+- Debug isolated M5 image: run `make openocd`, then `make gdb-m5-test`
+- Isolated M6 target build/SysTick disassembly: `make m6-hardware-test`
+- Flash isolated M6 image: `make flash-m6-test`
+- Debug isolated M6 image: run `make openocd`, then `make gdb-m6-test` (use
+  `GDB=gdb-multiarch` when needed)
+- Isolated M7 target build/disassembly: `make m7-hardware-test`
+- Flash isolated M7 image: `make flash-m7-test`
+- Debug isolated M7 image: run `make openocd`, then `make gdb-m7-test` (use
+  `GDB=gdb-multiarch` when needed)
+- Isolated M8 target build/disassembly: `make m8-hardware-test`
+- Flash isolated M8 image: `make flash-m8-test`
+- Debug isolated M8 image: run `make openocd`, then `make gdb-m8-test` (use
+  `GDB=gdb-multiarch` when needed)
 - Flash with ST-Link/OpenOCD: `make flash`
 - Debug: run `make openocd`, then `make gdb` in another terminal. Override a missing
   default client with `make gdb GDB=gdb-multiarch`.

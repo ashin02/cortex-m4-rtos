@@ -1,32 +1,47 @@
-/*
- * AeroRT - Cortex-M4 bounded critical sections
- *
- * Purpose:
- *   Protect kernel data from kernel-aware interrupts while allowing more urgent,
- *   non-kernel-aware interrupts to run.
- *
- * Responsibilities:
- *   Enter/exit nested BASEPRI sections, preserve prior masking state, provide needed
- *   barriers, and expose duration instrumentation hooks.
- *
- * Expected dependencies:
- *   Cortex-M special-register intrinsics, a configured kernel-aware IRQ threshold,
- *   and monitor hooks that do not recursively enter critical sections.
- *
- * TODO:
- *   [ ] Define the BASEPRI threshold from the actual implemented NVIC priority bits.
- *   [ ] Save and restore the previous BASEPRI value safely for nested callers.
- *   [ ] Use BASEPRI_MAX or equivalent semantics so nesting never weakens masking.
- *   [ ] Specify caller/ISR rules and assert unbalanced exits in debug builds.
- *   [ ] Place DSB/ISB/compiler barriers only where the architecture and data-sharing
- *       rules require them, with rationale documented.
- *   [ ] Timestamp outermost entry/exit to measure maximum interrupt-mask duration.
- *   [ ] Reserve PRIMASK/global masking for narrowly justified startup/fault cases.
- *
- * Non-goals:
- *   Long computation, peripheral locking, or masking non-kernel-aware urgent IRQs.
- *
- * Validation:
- *   Test nesting and prior-state restoration; use nested hardware interrupts and
- *   GPIO/DWT traces to verify which priorities remain serviceable.
- */
+#include <stdint.h>
+
+#include "aerortos/critical_section.h"
+
+#if defined(AERORTOS_HOST_TEST)
+extern uint32_t aerortos_host_basepri;
+#endif
+
+aerortos_critical_state_t aerortos_critical_enter(void)
+{
+#if defined(AERORTOS_HOST_TEST)
+    const uint32_t previous = aerortos_host_basepri;
+
+    if ((previous == 0U) || (previous > AERORTOS_KERNEL_BASEPRI)) {
+        aerortos_host_basepri = AERORTOS_KERNEL_BASEPRI;
+    }
+    return previous;
+#else
+    uint32_t previous;
+    const uint32_t threshold = AERORTOS_KERNEL_BASEPRI;
+
+    __asm volatile (
+        "mrs %0, basepri\n"
+        "msr basepri_max, %1\n"
+        "dsb\n"
+        "isb\n"
+        : "=&r" (previous)
+        : "r" (threshold)
+        : "memory");
+    return previous;
+#endif
+}
+
+void aerortos_critical_exit(aerortos_critical_state_t previous_basepri)
+{
+#if defined(AERORTOS_HOST_TEST)
+    aerortos_host_basepri = previous_basepri;
+#else
+    __asm volatile (
+        "msr basepri, %0\n"
+        "dsb\n"
+        "isb\n"
+        :
+        : "r" (previous_basepri)
+        : "memory");
+#endif
+}

@@ -9,6 +9,7 @@
 
 #define AERORTOS_INITIAL_XPSR UINT32_C(0x01000000)
 #define AERORTOS_INITIAL_FRAME_WORDS 16U
+#define AERORTOS_EXC_RETURN_THREAD_PSP UINT32_C(0xFFFFFFFD)
 
 typedef struct {
     uint32_t r4;
@@ -39,5 +40,9 @@ bool aerortos_port_build_initial_frame(
     void *argument,
     uint32_t **saved_psp_out);
 void aerortos_task_return_trap(void) __attribute__((noreturn));
+void aerortos_port_init(void);
+void aerortos_port_request_context_switch(void);
+void aerortos_port_start_first_task(void) __attribute__((noreturn));
+bool aerortos_port_in_handler_mode(void);
 
 #endif

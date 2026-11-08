@@ -9,10 +9,16 @@ freestanding ARM GCC build, STM32F446RE linker layout, vector/reset startup,
 minimal device/core definitions, terminal fault handlers, 16 MHz HSI setup, and an
 LD2 heartbeat image. The image builds and passes static binutils inspection, but no
 hardware, probe, OpenOCD, or ARM GDB client was available for target execution.
-M2 now adds a bounded static TCB pool, caller-owned guarded stacks, explicit task
-states, an initial integer Cortex-M frame builder, target ABI assertions, and an
-executable host test. Neither M1 nor M2 has on-target execution evidence. Scheduler,
-preemption, synchronization, and other RTOS source remains comment-only.
+M2 adds bounded static TCBs and initial integer frames. M3-M5 add fixed-priority
+FIFO ready queues, a bitmap selector, nested BASEPRI protection, SVC first launch,
+and PendSV context switching. The isolated M5 acceptance image passes on the
+physical STM32F446RE, including repeated debugger-reset runs. M6 now implements
+periodic timing and deadline tracking and its isolated acceptance image passes on
+the physical STM32F446RE, including a debugger-reset rerun. M7 bounded message
+queues also pass their isolated physical acceptance test and reset rerun. M8 bounded
+priority-inheritance mutexes pass their isolated physical acceptance test and an
+identical debugger-reset rerun. Broader multiple-ownership, transitive-PI, and M7
+wait-list-reordering coverage remains separately supported by host/sanitizer tests.
 
 Status terms:
 
@@ -29,20 +35,21 @@ observed maximum is not a mathematical WCET bound.
 
 | Area | Status | Evidence and missing work |
 |---|---|---|
-| Build/startup/target configuration | IMPLEMENTED / UNVERIFIED | ELF/BIN/map and binutils checks pass; target reset/heartbeat/debug execution remains unverified |
-| TCB, stacks, task lifecycle | IMPLEMENTED / UNVERIFIED | Static pool, lifecycle, guards, initial frames, host tests, and target ABI asserts pass; debugger inspection/exception return remain pending |
-| Bitmap scheduler and idle | MISSING | `kernel/scheduler.c` has no queues, bitmap, or operations |
-| Critical sections/IRQ policy | MISSING | `arch/cortex_m4/critical_section.c` has BASEPRI TODOs only |
-| SVC/PendSV and PSP/MSP | MISSING | `port.c`, `exception.c`, and `context_switch.S` contain no executable code |
-| Periodic time/timeouts/deadlines | MISSING | Kernel/BSP timer files are comments only |
-| Bounded queues and PI mutexes | MISSING | `queue.c` and `mutex.c` are comments only |
-| Tests and measurements | PARTIAL | `make test` executes M2 host tests and `make verify` checks M1 artifacts; target task-frame inspection and all later RTOS tests remain missing |
+| Build/startup/target configuration | IMPLEMENTED / UNVERIFIED | ELF/BIN/map checks and M5 target reset/vector/debug execution pass; standalone M1 heartbeat acceptance remains unrecorded |
+| TCB, stacks, task lifecycle | IMPLEMENTED / UNVERIFIED | Static lifecycle/frame host tests and target ABI checks pass; M5 proves task-frame exception return and guards, but full M2 acceptance remains separately tracked |
+| Bitmap scheduler and idle | IMPLEMENTED / UNVERIFIED | Host FIFO/priority/invariant tests plus M5 target dispatch, preemption, and idle fallback pass; M3 remains separately tracked |
+| Critical sections/IRQ policy | IMPLEMENTED / UNVERIFIED | Host prior-state tests and M5 target nested `0/0x40/0x40` behavior pass; urgent-IRQ liveness and masked-duration evidence remain |
+| SVC/PendSV and PSP/MSP | COMPLETE | Physical STM32F446RE: 130 switches, priority/idle/IRQ cases, valid PSP/MSP/CONTROL, zero failures, repeated debugger-reset pass |
+| Periodic time/deadlines | COMPLETE | Physical STM32F446RE M6 acceptance image: 49 passes, zero failures, 21 SysTick IRQs, one preemption, 17 idle entries, one deliberate high-priority deadline miss, and verified 4 ms/5 ms releases across tick wrap; debugger-reset rerun matched |
+| Bounded message queues | COMPLETE | Physical STM32F446RE M7 acceptance image: 40 passes, zero failures, one preemption, one blocked send, two blocked receives, expected nine-event trace, empty queue/no waiters, and identical debugger-reset rerun |
+| PI mutexes | COMPLETE | Physical STM32F446RE M8 acceptance image: completion magic `0x4D385041`, 43 passes, zero failures, one boost/restoration/block/preemption, all completion flags, empty mutex ownership/waiters, restored base priorities, expected nine-event trace, and identical debugger-reset rerun; multiple ownership, transitive PI, and M7 wait-list reordering remain host/sanitizer evidence |
+| Tests and measurements | PARTIAL | Host/sanitizer/static suites and isolated M5 physical target test pass; calibrated timing samples remain absent |
 | Flight-like workload | MISSING | `flight/*.c` are comments only |
 | Public finalization | BLOCKED | Requires completed evidence and explicit README authorization |
 
-M0 is complete. M1 and M2 are implemented but remain hardware-unverified; neither
-may be marked COMPLETE from host/build evidence alone. No scheduler or preemption
-feature is implemented.
+M0 and M5-M8 are complete. M1-M4 retain their separately recorded statuses; M5
+target evidence does not automatically close their broader milestone criteria. M9
+and later remain out of scope.
 
 ## 2. Scope and final requirements
 
@@ -131,14 +138,14 @@ alternatives were not recorded in the repository.
 
 ### ED7 — Queue and priority-inheritance scope
 
-- Queues use fixed-capacity caller storage and explicit full/empty/timeout results.
+- Queues use fixed-capacity caller storage and explicit full/empty results. M7 has
+  indefinite blocking and deliberately defers timed waits/cancellation.
   Copy cost is bounded by configured element size, not O(1) for arbitrary messages.
-- Mutexes are task-context only. PI must cover the low/medium/high case and restore
-  effective priority across multiple owned mutexes.
-- M8 must decide recursion, waiter order, owned-mutex and chain limits, timeout
-  propagation, and cycle/deadlock behavior before coding. PI mitigates inversion;
-  it neither prevents deadlock nor proves a blocking bound without critical-section
-  and chain analysis.
+- Mutexes are task-context only. M8 covers the low/medium/high case, transitive
+  donation, and restoration across multiple owned mutexes. ED14 records the bounded
+  policy selected for recursion, waiter ordering, ownership, chains, and cycles.
+- PI mitigates inversion; it does not prove an application blocking bound without
+  critical-section and acquisition-chain analysis.
 
 ### ED8 — Tests accompany implementation
 
@@ -187,22 +194,125 @@ alternatives were not recorded in the repository.
 - From low to high address, `saved_psp` references R4-R11 followed by the hardware
   R0-R3/R12/LR/PC/xPSR frame. R0 carries the task argument, stacked PC is halfword-
   aligned with xPSR Thumb bit set, and LR points to a terminal task-return trap. The
-  EXC_RETURN value is not stored per task under the integer-only policy; M5 must use
-  the fixed thread/PSP basic-frame return value.
+  EXC_RETURN value is not stored per task under the integer-only policy; M5 uses the
+  fixed thread/PSP basic-frame return value.
 - A project-owned offset header fixes ARM offsets for assembly. Cross-compilation
   asserts `saved_psp=0`, `stack_low=4`, `stack_high=8`, `entry=12`, `argument=16`,
-  and target TCB size 56 bytes. Both software and hardware frames are asserted at
-  32 bytes. Host pointer widths may differ, so target-only offsets are asserted only
-  in the 32-bit build.
+  and target TCB size 256 bytes after the M6 timing fields were appended. The five
+  assembly-visible offsets remain unchanged. Both software and hardware frames are
+  asserted at 32 bytes. Host pointer widths may differ, so target-only offsets are
+  asserted only in the 32-bit build.
 - TCB pointers are valid only while their slot is allocated. `id` is diagnostic,
   not a generation-safe handle; callers must not retain a TCB pointer after release.
 - M2 lifecycle operations are deliberately single-threaded and do not update ready
-  queues or enter critical sections. M3 must centralize scheduler-owned state/list
-  changes; M4 supplies the interrupt-safe atomicity mechanism before preemption.
+  queues or enter critical sections. M3-M5 scheduler APIs now own runnable state/list
+  changes after registration and use M4 critical sections.
 - Guard checks occur on lifecycle transitions; fill scanning is an explicit bounded
   diagnostic proportional to configured stack size and must stay outside future hot
   scheduler/critical paths. Guards/high-water patterns detect some overwrites but do
   not replace MPU protection or on-target stack-bound validation.
+
+### ED11 — M3-M5 dispatch and exception handoff (implemented; M5 target-verified)
+
+- Priorities 0-30 are application priorities and 31 is reserved for the idle task;
+  lower numbers are more urgent. Ready bitmap bit `31-priority` makes `CLZ` return
+  the highest READY priority. Each priority owns an intrusive FIFO queue.
+- A RUNNING application task remains selected when no READY task strictly outranks
+  it. A higher-priority READY task causes the old RUNNING task to be changed to READY
+  and appended exactly once. Yield changes the caller to READY before PendSV so it
+  joins its FIFO tail; block removes it from eligibility; idle is never queued.
+- `aerortos_current_task` continues to name the executing task until PendSV has saved
+  R4-R11 and PSP. Only then does `aerortos_scheduler_switch_context` perform the
+  RUNNING/READY handoff. This prevents the scheduler from losing the outgoing PSP.
+- Scheduler mutation uses BASEPRI `0x40` with saved prior-state nesting. SVC is
+  configured at `0x20`; PendSV at implemented-lowest `0xF0`. IRQs encoded `0x40` or
+  less urgent may call the bounded wake API; more urgent IRQs must not call
+  kernel APIs. Yield and block reject Handler mode.
+- SVC restores the selected task's software frame and exception-returns with
+  `0xFFFFFFFD`. PendSV relies on hardware for R0-R3/R12/LR/PC/xPSR, saves/restores
+  R4-R11, and stores the resulting aligned PSP at TCB offset zero. The C/assembly
+  offset assertions remain authoritative.
+- The policy remains integer-only and soft-float. No FP context is saved and FPU use
+  by tasks remains prohibited. Task return still enters the terminal return trap.
+- `aerortos_scheduler_add` is startup registration. Direct M2 lifecycle transitions
+  are not safe after scheduler ownership begins; M5 uses scheduler yield/block/wake
+  for runnable-state changes.
+
+### ED12 — M6 periodic release and deadline policy (implemented; target-verified)
+
+- SysTick is the deterministic kernel time source at exactly 1 kHz from the 16 MHz
+  HSI. It runs at encoded priority `0x40`, equal to the kernel BASEPRI threshold;
+  SVC remains `0x20` and PendSV `0xF0`. The strong vector handler advances time and
+  uses only the existing ISR-safe ready operation.
+- Time is unsigned 32-bit milliseconds. Period, deadline, and initial-delay inputs
+  are nonzero where required and limited to `INT32_MAX`; signed-difference ordering
+  is valid over that declared half-range and across counter wrap.
+- Periodic registration stores an absolute phase. Every due phase advances with
+  `next_release += period`, never `now + period`, so handler or dispatch delay cannot
+  accumulate drift. Simultaneous due tasks are processed in fixed registration order;
+  fixed-priority/FIFO ready queues determine execution order.
+- Each task has at most one active job. `aerortos_periodic_wait_next` records
+  completion and blocks the calling Thread-mode task until the next phase. If a phase
+  occurs while its prior job is active, the new job is not queued: one overrun and
+  one skipped-release event are recorded, the old job continues, and the absolute
+  phase advances. There is no backlog or catch-up burst.
+- An active job misses once when tick time becomes strictly later than its absolute
+  release-plus-relative-deadline. Completion on the deadline tick is on time. A miss
+  does not kill the job; after completion, the next unoccupied phase releases it
+  normally. Counters saturate at `UINT32_MAX`.
+- SysTick accounts one execution tick to the RUNNING active periodic job and scans a
+  static array of at most eight registered tasks. Dispatch remains ED1 O(1); interrupt
+  work is O(8), a compile-time bound. Each TCB contains an overwrite-on-full ring of
+  eight release/start/completion/miss/overrun records. Jitter and execution values
+  have tick resolution and do not replace M10 calibrated measurements.
+
+### ED13 — M7 bounded queue policy (implemented; target-verified)
+
+- Queue control blocks and payload arrays are caller-owned and fixed for their full
+  lifetime. Initialization rejects null storage, zero capacity/element size, and a
+  capacity-times-element-size overflow. No heap, hidden payload storage, overwrite,
+  queue deletion, or reinitialization with waiters is supported.
+- `aerortos_queue_try_send/receive` return explicit full/empty results and never
+  block. They are the only queue operations allowed from an ISR, and then only at a
+  kernel-aware encoded priority `0x40` or less urgent. Blocking send/receive reject
+  Handler mode and wait indefinitely; timed waits and cancellation remain deferred.
+- The ring is FIFO, including capacity-one and index wrap. A successful receive wakes
+  one blocked sender; a successful send wakes one blocked receiver. Waiters are
+  ordered by effective priority and FIFO within equal priority. Wake removes the
+  intrusive node and clears `wait_object` before making the task READY, so a PendSV
+  request may safely preempt the caller after BASEPRI restoration.
+- Queue state inspection, condition check, waiter insertion/removal, payload copy,
+  and scheduler wake/block transition occur under the nested BASEPRI mechanism. This
+  closes the check-before-block lost-wakeup window. A woken task rechecks the queue,
+  so intervening consumers/producers cannot cause underflow or overflow.
+- Ring index/count work is O(1). Payload copying is O(element size) and occurs while
+  BASEPRI is raised; applications must bound element size accordingly. Ordered wait
+  insertion is O(number of waiters), bounded by the eight-task system capacity;
+  removal/wake is O(1). Input/output buffers must not overlap queue payload storage.
+
+### ED14 — M8 bounded priority-inheritance mutex policy (implemented; target-validated)
+
+- Mutex objects are caller-owned, explicitly initialized, non-recursive, and valid
+  for their full use lifetime. There is no allocation, deletion, timed locking, or
+  cancellation. Reinitializing an owned mutex or one with waiters is unsupported.
+- `aerortos_mutex_lock`, `try_lock`, and owner-only `unlock` are Thread-mode APIs;
+  mutex operations are rejected in Handler mode. Contended blocking lock atomically
+  enqueues and blocks under BASEPRI. Unlock transfers ownership to the highest-
+  effective-priority waiter and requests PendSV when the new owner outranks the
+  running task.
+- Waiters are ordered by effective priority with FIFO preservation for equal
+  priorities. Each TCB retains immutable base priority and mutable effective
+  priority. A priority change repositions a READY task in its ready queue or a
+  BLOCKED task in its mutex or M7 queue wait list.
+- Effective priority is the highest donation from the heads of all owned-mutex wait
+  lists, otherwise base priority. Recalculation after waiter arrival or unlock
+  propagates through mutex-owner chains, so multiple ownership and transitive PI are
+  supported. Acquisition cycles are rejected as deadlock instead of blocking.
+- Bounds follow the eight-task kernel: at most eight owned mutexes per task, eight
+  waiters per list, and eight links in a propagation/deadlock walk. Ready selection
+  remains O(1); ordered insertion/reordering, ownership scans, restoration, and
+  transitive propagation are O(8), with nested propagation bounded by eight tasks.
+  These are fixed system bounds, not unbounded asymptotic operations.
 
 ## 4. Milestone plan
 
@@ -277,101 +387,309 @@ invariants tested and BASEPRI validated before interrupt-driven preemption.
 - **Additional evidence obtained:** ASan/UBSan at `-O1` passes with a non-PIE host
   binary and leak detection disabled because LeakSanitizer cannot operate in this
   container. `make clean && make verify` passes the host suite and strict soft-float
-  Cortex-M cross-build. Target static assertions validate the 56-byte TCB and frame/
-  offset ABI; target objects reference no allocation functions.
-- **Integrated target artifact:** the current ELF retains the non-running smoke task,
-  frame builder, and task pool for debugger inspection. It contains text 1,748 bytes,
-  data 8 bytes, and BSS 720 bytes; raw BIN is 1,756 bytes. The vector still begins at
-  `0x08000000`, initial MSP remains `0x20020000`, and current Thumb reset entry is
-  `0x08000681`. Symbols expose `aerortos_m2_smoke_stack` at `0x20000008`, the smoke
-  TCB pointer at `0x20000108`, and the static pool beginning at `0x20000118`.
+  Cortex-M cross-build. The M2-era assertion validated the 56-byte TCB; the current
+  M6 TCB is 256 bytes with unchanged assembly-visible offsets, and frame/offset ABI
+  assertions still pass. Target objects reference no allocation functions.
+- **Historical integrated artifact:** the M2-era ELF retained a non-running smoke
+  task and measured text 1,748 bytes, data 8 bytes, and BSS 720 bytes. The current
+  M6 default artifact supersedes it and launches real PSP tasks.
 - **Architecture cross-check:** Arm DUI 0553 confirms the basic exception-frame order,
   xPSR.T restoration on exception return, stack-alignment mechanism, and
-  `0xFFFFFFFD` as the non-floating-point Thread/PSP EXC_RETURN for future M5 use.
-- **Outstanding acceptance evidence:** inspect `aerortos_m2_smoke_task` and its frame
-  through an STM32F446 debugger and eventually prove exception unstack/return in M5.
-  The smoke task is constructed but deliberately never launched. M2 remains
-  IMPLEMENTED / UNVERIFIED because host address projection cannot prove Cortex-M
-  PSP, exception-return, or task-entry execution.
+  `0xFFFFFFFD` as the non-floating-point Thread/PSP EXC_RETURN used by M5.
+- **Later evidence:** M5 now proves Cortex-M task-frame exception unstack/return,
+  aligned PSP use, and task-entry execution on STM32F446RE. M2 remains separately
+  IMPLEMENTED / UNVERIFIED pending its own complete debugger-inspection record.
 
-#### M3 — Bitmap scheduler and idle task — MISSING
+#### M3 — Bitmap scheduler and idle task — IMPLEMENTED / UNVERIFIED
 
 - **Objective:** implement portable decisions before architecture preemption.
 - **Relevant files:** `kernel/scheduler.c`, task state helpers,
   `tests/scheduler_test.c`.
-- **Decisions/tradeoffs:** fixed priority/bit mapping, intrusive FIFO queues, idle at
-  lowest priority, no task scan or initial time slicing.
+- **Decisions/tradeoffs:** ED11 fixes priority/bit mapping, intrusive FIFO queues,
+  reserved idle priority, no task scan, and no periodic time slicing.
 - **Acceptance:** correct highest READY task; ED1-scoped O(1) operations; bitmap and
   queue emptiness always agree; FIFO ties, boundary priorities, block/unblock, and
   priority moves never lose or duplicate a task.
-- **Verification evidence:** deterministic and seeded randomized host invariant tests
-  added now, target cross-build, and selection code/disassembly review.
+- **Verification evidence obtained (2026-11-07):** `scheduler_test` passes strict
+  priority, higher-priority wake preemption, duplicate rejection, equal-priority FIFO
+  yield, block, idle fallback/preemption, Handler-mode boundaries, nested host
+  BASEPRI state, and ready-list/bitmap invariants. `context_switch_test` performs
+  1,000 alternating handoffs with invariant, guard, and saved-PSP checks. ASan/UBSan
+  passes both suites. This is portable policy evidence, not target dispatch evidence.
+- **Target evidence obtained through M5:** the physical-board trace confirms FIFO
+  peer order, higher-priority wake/preemption, block, idle fallback, resumed task,
+  and zero scheduler-invariant failures. M3 remains separately IMPLEMENTED /
+  UNVERIFIED because its full boundary-priority and priority-move acceptance record
+  is broader than the M5 workload.
 
-#### M4 — BASEPRI critical sections and IRQ contract — MISSING
+#### M4 — BASEPRI critical sections and IRQ contract — IMPLEMENTED / UNVERIFIED
 
 - **Objective:** prove the atomicity mechanism required by preemption.
 - **Relevant files:** `arch/cortex_m4/critical_section.c`, `port.c`, BSP IRQ setup,
   new host seams and target tests.
-- **Decisions/tradeoffs:** implemented NVIC bits/threshold, nesting that never weakens
-  masking, exact prior-state restore, justified barriers, kernel-aware IRQ band.
+- **Decisions/tradeoffs:** four implemented priority bits, BASEPRI threshold `0x40`,
+  saved-state nesting using `BASEPRI_MAX`, exact prior-state restore, DSB/ISB
+  boundaries, SVC at `0x20`, and PendSV at `0xF0`. More urgent non-kernel-aware IRQs
+  may run but may not call kernel APIs.
 - **Acceptance:** nesting restores prior mask; urgent non-kernel IRQs remain live;
   kernel-aware IRQs cannot race scheduler state; misuse is detected; maximum masked
   duration is observable.
-- **Verification evidence:** host mask-state tests plus on-target nested-priority IRQ
-  traces and duration measurements. Preemption remains disabled until these pass.
+- **Verification evidence obtained (2026-11-07):** host seams prove nesting does not
+  weaken the threshold and restores zero/nonzero prior values. The isolated target
+  test pends kernel-aware SysTick while two BASEPRI levels are active, checks that it
+  remains deferred until the outer restore, wakes a higher-priority task from the
+  ISR, and expects PendSV tail-chain preemption.
+- **Hardware failure observed after the SysTick-vector fix (2026-11-07):** GDB in
+  privileged Thread/PSP mode reported outer saved BASEPRI `0`, inner saved BASEPRI
+  `0`, and live BASEPRI `0`. Disassembly showed `movs r0,#128; mrs r0,BASEPRI; msr
+  BASEPRI_MAX,r0`. The inline-assembly `"=r"` output allowed GCC to overlap the
+  saved-output and threshold input; `mrs` destroyed the threshold before the write.
+- **Fix after the failed run:** the saved-output constraint is early-clobber
+  `"=&r"`, forcing distinct registers. The unexplained M5 `0x80` threshold drift was
+  also reconciled with the earlier M4 contract: BASEPRI is restored to shifted
+  priority `0x40`, SVC is `0x20`, the test SysTick is `0x40`, and PendSV is `0xF0`.
+  Target static assertions enforce ordering/alignment. `make verify` disassembles the
+  actual ARM object and rejects overlap; GCC 14.2.1 now emits `movs r3,#64; mrs
+  r0,BASEPRI; msr BASEPRI_MAX,r3`. The target test records and checks outer `0`, inner
+  `0x40`, and live masked BASEPRI `0x40`.
+- **Target evidence now obtained:** the corrected M5 physical-board run passed the
+  nested BASEPRI deferral, one kernel-aware IRQ wake, and one resulting priority
+  preemption with outer `0`, inner `0x40`, live masked `0x40`, and zero failures.
+  M4 remains IMPLEMENTED / UNVERIFIED because its broader acceptance also requires
+  urgent non-kernel IRQ liveness/misuse evidence and observable masked duration.
 
-#### M5 — SVC/PendSV launch and preemption — MISSING
+#### M5 — SVC/PendSV launch and preemption — COMPLETE
 
 - **Objective:** launch and preempt independent PSP-backed tasks.
 - **Relevant files:** `arch/cortex_m4/{port.c,exception.c,context_switch.S}`,
   task/scheduler integration, `tests/context_switch_test.c`.
-- **Decisions/tradeoffs:** MSP handlers, lowest-appropriate PendSV priority, verified
-  C/assembly ABI, integer-only contexts until ED5 is completed.
+- **Decisions/tradeoffs:** ED11 defines the save-before-select handoff, strict
+  higher-priority preemption, FIFO voluntary yield, MSP handlers, PSP tasks, fixed
+  basic-frame EXC_RETURN, and integer-only context policy.
 - **Acceptance:** valid first exception return; repeated voluntary/interrupt switches
   preserve R4-R11 and hardware state; PSP is aligned/in-bounds; MSP serves handlers;
   higher-priority READY tasks preempt; nested IRQ and task return are safe.
-- **Verification evidence:** on-target register-pattern stress, guard/PSP/MSP asserts,
-  frame inspection, nested-IRQ cases, GPIO/DWT traces, and M1-M4 regression.
+- **Verification evidence obtained (2026-11-07):** warnings-as-errors default and
+  isolated target images link under `-mcpu=cortex-m4 -mthumb -mfloat-abi=soft`.
+  `make verify` confirms the vector resolves strong SVC/PendSV/SysTick symbols, no
+  undefined symbols, target TCB offset assertions, and a soft-float ELF. Handler disassembly
+  shows SVC restoring R4-R11/PSP and both paths loading `0xFFFFFFFD`; PendSV saves
+  R4-R11 below the hardware frame, stores PSP at TCB offset zero, calls the bounded
+  selector on MSP, and restores the selected PSP. All three host tests and all three
+  ASan/UBSan binaries pass.
+- **Isolated target image:** `make m5-hardware-test` emits
+  `build/m5_hw_test.{elf,bin,map}` (text 4,112 bytes, data 4 bytes, BSS 3,100 bytes
+  with GCC 14.2.1). It exposes `aerortos_m5_hw_{pass_count,fail_count,switch_count,
+  preemption_count,idle_count,irq_count,complete,trace_count,trace}` and a completion
+  breakpoint. It covers first SVC entry, R4-R11 patterns, repeated FIFO switches,
+  blocking, ISR higher-priority wake, nested BASEPRI deferral, idle fallback/wake,
+  guards, PSP bounds/alignment, and scheduler invariants.
+- **Hardware failure observed (2026-11-07):** the first STM32F446RE run proved SVC
+  launch reached `task_a_entry`, then exception 15 entered `Default_Handler` and
+  panicked with `0xFFFFFFFF`; CFSR/HFSR remained zero. VTOR was reset value zero and
+  its aliased SysTick vector contained `0x08000625`, the Thumb address of
+  `Default_Handler`; the linked ELF had no `SysTick_Handler`. Root cause was the
+  startup object's `.thumb_set` weak SysTick alias binding its own vector relocation,
+  which allowed the strong target-test C handler to be garbage-collected.
+- **Fix after the failed run:** SysTick is no longer weak-aliased in startup, so both
+  default and isolated images must supply a real handler or fail to link. Reset now
+  writes `_vector_table` (`0x08000000`) to VTOR with DSB/ISB. Build checks require a
+  strong `SysTick_Handler` distinct from `Default_Handler`. In the current rebuilt
+  target, the vector slot is `0x08000595`, resolving to `SysTick_Handler` at
+  `0x08000594` rather than `Default_Handler` at `0x080006CC`.
+- **Critical-section debugging fix:** a subsequent board run exposed overlapping GCC
+  operands in `aerortos_critical_enter`: `"=r"` allowed `mrs` to overwrite the
+  threshold before `msr BASEPRI_MAX`. The output is now early-clobber `"=&r"`; the
+  M4 ceiling is consistently `0x40`, and actual-object disassembly is regression
+  checked. The corrected image records outer/inner/live BASEPRI for target assertions.
+- **Physical STM32F446RE verification passed (2026-11-07):** completion magic was
+  `0x4D355041`; 157 checks passed with zero failures; 130 context switches completed;
+  one higher-priority preemption, one idle transition, and one kernel-aware IRQ event
+  occurred. BASEPRI was outer `0`, inner `0x40`, masked `0x40`. At completion,
+  CONTROL was `0x2`, PSP `0x200003F0`, and MSP `0x2001FFD0`. The execution trace was
+  `0x10000001, 0xA0000001, 0xB0000001, 0x10000002, 0x1D1E0001,
+  0xA0000002`, demonstrating first high task, FIFO peers, higher-priority wake,
+  idle fallback, and resumed task completion in the expected order. A debugger reset
+  and complete rerun again produced 157 passes and zero failures.
+- **Completion verdict:** M5 acceptance is met for integer-only SVC launch, repeated
+  voluntary PendSV switching, ISR-triggered preemption, FIFO yield, blocking, idle
+  fallback, register/stack/PSP/MSP integrity, nested BASEPRI handoff, and repeated
+  reset execution on the declared board. M5 is COMPLETE.
+- **Remaining limitations:** this is functional verification, not calibrated latency
+  or WCET evidence. Floating-point task contexts remain prohibited; graceful task
+  return is not implemented (return enters the terminal trap); no periodic scheduler,
+  timeout, IPC, mutex, or M6 behavior is included. The repeated run was a debugger
+  reset, not documented cold-power-cycle coverage.
 
 ## Phase 2 — RTOS Features
 
-#### M6 — Periodic scheduling, timeouts, and deadlines — MISSING
+#### M6 — Periodic scheduling and deadline tracking — COMPLETE
 
-- **Objective:** provide correct periodic release and bounded timeout behavior.
-- **Relevant files:** `bsp/stm32f446/timer.c`, `kernel/{timer,deadline}.c`, scheduler/
-  task hooks, `tests/deadline_test.c`, new timer tests.
-- **Decisions/tradeoffs:** periodic tick per ED6; define frequency, time width/wrap
-  horizon, equal-expiry order, capacity, and deadline boundary; absolute releases.
-- **Acceptance:** wrap comparisons and due ordering are correct; cancel/signal has one
-  winner; phase does not drift; misses/overruns count once; no stale catch-up burst.
-- **Verification evidence:** fake-clock wrap/race tests added now; target tick/release
-  tests, long-run phase check, and deliberate miss/overrun cases.
+- **Objective:** provide a deterministic 1 kHz time base, phase-correct periodic
+  release/blocking, preemption, and bounded deadline/overrun statistics.
+- **Relevant files:** `include/aerortos/{task,timer,deadline}.h`,
+  `bsp/stm32f446/timer.c`, `kernel/{timer,deadline}.c`, scheduler/task hooks,
+  `tests/deadline_test.c`, and `tests/target/m6_periodic_test.c`.
+- **Decisions/tradeoffs:** ED12 defines the time width/wrap horizon, fixed eight-task
+  scan, simultaneous-release ordering, one-active-job/no-backlog overrun policy,
+  strict-after deadline boundary, counter saturation, and bounded trace overwrite.
+  General timed waits/timeouts are intentionally deferred to their owning IPC work;
+  M6 adds only periodic wait-until-next-release.
+- **Implementation:** task configuration accepts period, relative deadline, and
+  initial release delay. Scheduler registration binds periodic TCBs to the fixed
+  timer table. SysTick advances time, accounts execution, checks deadlines, advances
+  every due absolute phase, wakes eligible blocked jobs through the ISR-safe ready
+  path, and lets PendSV preempt when a higher-priority release becomes READY.
+- **Host verification (2026-11-07):** strict `deadline_test` passes simultaneous
+  release and priority order, higher-priority preemption request, periodic completion/
+  block and idle fallback, releases at ticks 2/7/12 without drift, exact-deadline
+  success, one deliberate miss, skipped-release overrun and recovery, execution-tick
+  accounting, delayed-dispatch jitter, and wrap from `UINT32_MAX` to zero. Task tests
+  reject inconsistent/zero/out-of-half-range timing configurations. Existing task,
+  scheduler, and 1,000-handoff context-switch regressions still pass. ASan/UBSan pass
+  all four host binaries with leak checking disabled as documented.
+- **Cross-build verification (2026-11-07):** the default and isolated M5/M6 images
+  build warning-free for Cortex-M4 soft-float. `make verify` confirms a strong
+  `SysTick_Handler`, SVC/PendSV symbols, no linked undefined symbols, startup/vector
+  layout, and the corrected BASEPRI operand separation. `make m6-hardware-test`
+  confirms the M6 SysTick vector does not alias `Default_Handler`, has no undefined
+  symbols, and disassembles the handler calling the bounded kernel tick path.
+- **Isolated target acceptance image:** starts near 32-bit wrap and exports completion
+  magic `0x4D365041`, PASS/FAIL counts, IRQ/preemption/idle counts, a 32-word execution
+  trace, per-task release timestamp arrays, and TCB timing rings. Four tasks cover
+  idle, low period-4 work, simultaneous high/peer period-5 release, actual higher-
+  priority preemption, R4-R11 preservation, a deliberate deadline miss, recovery,
+  phase spacing, wrap, guards, CONTROL.SPSEL, and scheduler invariants.
+- **Hardware validation (2026-11-07):** the isolated image completed on the physical
+  NUCLEO-F446RE with completion magic `0x4D365041`, 49 passes, zero failures, 21
+  SysTick IRQs, one preemption, 17 idle entries, and one high-priority deadline miss.
+  It verified periodic releases at 4 ms and 5 ms intervals across 32-bit tick
+  wraparound. A debugger-reset rerun again produced 49 passes, zero failures, and
+  the same one-miss count. This closes M6's target acceptance criteria.
+- **Coverage qualification:** overrun and skipped-release paths remain supported by
+  the recorded host-test evidence; they were not exercised in this hardware run.
+- **Exact target procedure:** build with `make clean && make m6-hardware-test`, flash
+  with `make flash-m6-test`, run `make openocd` in one terminal, and run
+  `make gdb-m6-test GDB=gdb-multiarch` in another. In GDB use `continue`, then inspect
+  `p/x aerortos_m6_hw_complete`, `p aerortos_m6_hw_pass_count`,
+  `p aerortos_m6_hw_fail_count`, `p aerortos_m6_hw_irq_count`,
+  `p aerortos_m6_hw_preemption_count`, `p aerortos_m6_hw_idle_count`,
+  `p aerortos_m6_hw_trace_count`, `x/32wx aerortos_m6_hw_trace`, the three
+  `aerortos_m6_*_releases` arrays, and the three application TCBs. Use
+  `monitor reset halt`, reapply the completion breakpoint, and `continue` for the
+  required debugger-reset rerun.
 
-#### M7 — Bounded message queues — MISSING
+#### M7 — Bounded message queues — COMPLETE
 
 - **Objective:** implement bounded IPC with correct blocking and visible overload.
-- **Relevant files:** `kernel/queue.c`, scheduler/timer APIs,
-  `tests/queue_overflow_test.c`.
-- **Decisions/tradeoffs:** caller storage, fixed element/capacity, try/timed/blocking
-  APIs, deterministic waiter order, narrow ISR-safe subset, external freshness policy.
-- **Acceptance:** capacity-one/wrap work; no overwrite/out-of-bounds access; all
-  results explicit; timeout race removes once; higher-priority wake preempts; copy and
-  memory bounds documented.
-- **Verification evidence:** host edge/invariant/forced-interleaving tests added now,
-  memory-safety tooling where feasible, target task/ISR handoff and DWT timing.
+- **Relevant files:** `include/aerortos/queue.h`, `kernel/queue.c`, existing scheduler
+  block/wake APIs, `tests/queue_test.c`, and `tests/target/m7_queue_test.c`.
+- **Decisions/tradeoffs:** ED13 defines caller storage, capacity/element bounds,
+  explicit try results, indefinite task waits, priority/FIFO waiter order, the narrow
+  ISR-safe try subset, and O(element-size) copying under BASEPRI. Timed waits,
+  cancellation, deletion, overwrite/latest-value policy, and M8 PI are not included.
+- **Implementation:** a generic byte-copy ring supports fixed-size messages and
+  capacity-one/wrap cases. Full senders and empty receivers atomically join separate
+  priority/FIFO wait lists and block through the existing scheduler. The opposite
+  operation removes one waiter before making it READY, which requests PendSV when it
+  outranks the running task. All queue state, payload copies, and wait-list changes
+  are protected by nested BASEPRI critical sections; blocking APIs reject Handler
+  mode while nonblocking try APIs follow the existing kernel-aware ISR contract.
+- **Host verification (2026-11-07):** `queue_test` passes FIFO/wrap, capacity-one,
+  full/empty, count/invariant diagnostics, invalid configuration/pointers, Handler-
+  mode blocking rejection, ISR-style try operations, blocked sender and receiver
+  wakeups, higher-priority preemption, equal-priority interleaving, and two concurrent
+  receivers woken in priority order. All M1-M6 host regressions still pass. All five
+  ASan/UBSan binaries pass with leak detection disabled as documented.
+- **Cross-build/static verification (2026-11-07):** `make clean && make verify`,
+  `make m5-hardware-test`, `make m6-hardware-test`, and
+  `make m7-hardware-test` pass warnings-as-errors. The default ELF remains soft-float
+  with strong SVC/PendSV/SysTick handlers, valid BASEPRI operand separation, and no
+  undefined symbols. The corrected isolated M7 ELF is 6,108 bytes text, 8 bytes data,
+  and 4,456 bytes BSS; its queue object has no malloc/free/memcpy/memset references.
+- **Isolated target acceptance image:** completion magic is `0x4D375041`. A
+  capacity-one queue forces one high-priority blocking send and two high-priority
+  blocking receives. The low-priority peer frees/fills the queue and must be preempted
+  by each wake. The image checks FIFO payloads, full handling, wait-list and scheduler
+  invariants, empty completion state, stack guards, PSP Thread mode, restored BASEPRI,
+  and exports PASS/FAIL, preemption/block counters, and a 16-word trace.
+- **Hardware verification (2026-11-07):** after the test-only completion handshake
+  fix, the physical NUCLEO-F446RE reached magic `0x4D375041` with exactly 40 passes,
+  zero failures, one preemption, one blocked send, two blocked receives, all nine
+  expected trace events, and a final queue count and sender/receiver waiter counts
+  of zero. A debugger-reset rerun produced identical results. High cannot publish
+  completion until Low records its final check; completion is gated on the handshake,
+  exact pass count, and zero failures. Kernel queue behavior was unchanged by the
+  synchronization fix.
+- **Exact target procedure:** run `make clean && make m7-hardware-test`, then
+  `make flash-m7-test`. Run `make openocd` in one terminal and
+  `make gdb-m7-test GDB=gdb-multiarch` in another. Continue to
+  `aerortos_m7_hw_test_complete_marker`, then inspect
+  `aerortos_m7_hw_{complete,pass_count,fail_count,preemption_count,
+  blocked_send_count,blocked_receive_count,trace_count,trace}` and
+  `aerortos_m7_queue`, plus `low_final_check_complete`. Use `monitor reset halt`,
+  retain/reapply the completion breakpoint, `continue`, and capture the same evidence
+  from the reset rerun.
 
-#### M8 — Priority-inheritance mutexes — MISSING
+#### M8 — Priority-inheritance mutexes — COMPLETE
 
-- **Objective:** mitigate inversion within a documented bounded PI scope.
-- **Relevant files:** `kernel/mutex.c`, task/scheduler/timer integration,
-  `tests/priority_inversion_test.c`.
-- **Decisions/tradeoffs:** finalize ED7 recursion, ordering, ownership/chain limits,
-  timeouts, cycles, and restoration before coding; mutexes remain forbidden in ISRs.
-- **Acceptance:** low owner inherits high and runs before medium; READY owner requeues
-  atomically; transfer/unlock is correct; timeout, several waiters, multiple owned
-  mutexes, and supported chains restore the highest remaining/base priority.
-- **Verification evidence:** exhaustive host state/order tests added now; target low/
-  medium/high traces; controlled with/without-PI timing and documented blocking limits.
+- **Objective:** mitigate inversion within the documented bounded PI scope.
+- **Relevant files:** `include/aerortos/mutex.h`, TCB wait/ownership fields,
+  scheduler effective-priority repositioning, M7 queue waiter reordering,
+  `kernel/mutex.c`, `tests/mutex_test.c`, and `tests/target/m8_mutex_test.c`.
+- **Decisions/tradeoffs:** ED14 selects caller-owned non-recursive mutexes,
+  task-context-only operations, priority/FIFO waiters, owner-only unlock, an
+  eight-mutex ownership limit, eight-task propagation bound, explicit cycle
+  rejection, and no timeout/cancellation/deletion support.
+- **Implementation:** each task keeps separate base/effective priorities and an
+  intrusive owned-mutex list. Blocking donation recalculates the owner's best
+  inherited priority, repositions READY, mutex-blocked, or queue-blocked tasks, and
+  propagates through mutex-owner chains. Unlock removes the released mutex before
+  restoration, transfers ownership to the highest-priority waiter, clears its wait
+  membership exactly once, and wakes it through the scheduler under BASEPRI.
+- **Host verification (2026-11-07):** all six M1-M8 host binaries pass. `mutex_test`
+  covers initialization/context/ownership errors, recursive lock and non-owner
+  unlock rejection, the eight-mutex ownership bound, equal-priority FIFO waiters,
+  classic low/medium/high inversion, preemptive ownership transfer, restoration
+  across multiple owned mutexes, transitive donation, ready/wait-list repositioning,
+  M7 queue waiter reordering, cycle rejection, and scheduler/queue/mutex invariants.
+  All six ASan/UBSan binaries pass with the documented leak check disabled.
+- **Cross-build/static verification (2026-11-07):** clean `make verify` and isolated
+  M5, M6, M7, and M8 target builds pass warnings-as-errors. The default ELF is 4,088
+  bytes text, 8 bytes data, and 3,596 bytes BSS. The M8 ELF is 6,956 bytes text,
+  8 bytes data, and 5,664 bytes BSS; it has strong SVC/PendSV/SysTick handlers, no
+  undefined symbols, and the mutex object has no malloc/free/memcpy/memset references.
+- **Isolated target image:** the low-priority task owns the mutex, then releases
+  medium and high. High blocks and donates priority 2 to Low; Low must run ahead of
+  Medium, transfer ownership, restore priority 10, and be preempted by High. High,
+  Medium, and Low each set an explicit completion flag and block instead of spinning.
+  Only after Low's post-unlock checks does it wake High to execute the final gate.
+  Completion requires exactly 43 passing checks, zero failures, all three flags, and
+  the exact nine-event trace, preventing the M7 early-completion failure mode.
+- **Hardware verification (2026-11-07):** the isolated M8 image passed on the
+  physical STM32F446RE with completion magic `0x4D385041`, 43/43 passing checks,
+  zero failures, and exactly one priority boost, restoration, blocking event, and
+  preemption. High, Medium, and Low completion flags were all `1`; the mutex owner
+  was null with zero waiters; High/Medium/Low effective priorities were restored to
+  their bases (`2`, `5`, `10`); and all owned-mutex counts were zero. All nine trace
+  events matched `A8000001, B8000001, C8000001, A8000002, C8000002, A8000003,
+  B8000002, C8000003, A8000004`. A debugger-reset rerun produced identical
+  completion, pass/fail, boost/restoration, and trace results.
+- **Evidence scope:** this board acceptance covers the isolated low/medium/high
+  inversion, donation, restoration, ownership transfer, and preemption scenario.
+  Multiple mutex ownership, transitive PI, and M7 queue wait-list reordering remain
+  host/sanitizer validation, as recorded above; they are not claimed as physical
+  board coverage.
+- **Exact target procedure:** run `make clean`, `make m8-hardware-test`, then
+  `make flash-m8-test`. Run `make openocd` in one terminal and
+  `make gdb-m8-test GDB=gdb-multiarch` in another. At
+  `aerortos_m8_hw_test_complete_marker`, inspect
+  `aerortos_m8_hw_{complete,pass_count,expected_pass_count,fail_count,boost_count,
+  restoration_count,block_count,preemption_count,trace_count,trace}`;
+  `high_complete`, `medium_complete`, `low_complete`; `aerortos_m8_mutex`; and the
+  base/effective priorities, owned counts, states, and stack guards of the three
+  application TCBs. The recorded physical run and its debugger-reset rerun met these
+  acceptance checks; retain this procedure for reproducibility.
 
 ## Phase 3 — Verification
 
@@ -464,11 +782,11 @@ retain raw machine-readable samples, and provide a reproducible analysis command
 
 | Final requirement | Required milestones | Current evidence | Completion criterion / verdict |
 |---|---|---|---|
-| Deterministic preemptive STM32 RTOS with synchronization | M1-M9, M11-M12 | Design comments only | Bounded kernel/workload passes target regression and stress. **Not defensible.** |
-| PendSV/PSP context switching across preemption | M2, M4-M5, M9-M10 | TODO contracts only | Register/stack/nested-IRQ target tests and switch measurement pass. **Not defensible.** |
-| Fixed-priority bitmap ready queues with scoped O(1) dispatch | M3-M5, M9 | Proposed contract only | ED1 operations and invariants are proven; target preemption works. **Not defensible.** |
-| Bounded queues and PI mutexes | M7-M9, M12 | Proposed contracts only | Capacity/race/PI tests, traces, and limits are complete. **Not defensible.** |
-| Measured switch latency, jitter, and deadline misses under stress | M6, M10-M12 | No samples | Repeated calibrated raw target evidence meets the protocol. **Not defensible.** |
+| Deterministic preemptive STM32 RTOS with synchronization | M1-M9, M11-M12 | M5 preemption, M7 queues, and the isolated M8 PI acceptance scenario pass on STM32; broader M8 multiple-ownership/transitive-PI/queue-reordering coverage is host/sanitizer-only | Bounded integrated kernel/workload passes target regression and stress. **Not yet defensible as the final claim.** |
+| PendSV/PSP context switching across preemption | M2, M4-M5, M9-M10 | M5 physical target test passes 130 switches, register/stack checks, ISR preemption, and reset rerun | Functional switching is proven; calibrated switch measurement and later integrated regression remain. **Functionally supported, timing unproven.** |
+| Fixed-priority bitmap ready queues with scoped O(1) dispatch | M3-M5, M9 | Host suites plus physical FIFO/preemption/idle trace pass | ED1 operations and invariants are proven; broader integrated regression remains. **Functionally supported.** |
+| Bounded queues and PI mutexes | M7-M9, M12 | M7 queues and the isolated M8 inversion/PI/restoration scenario pass repeated physical acceptance; M8 multiple ownership, transitive propagation, and queue integration remain host/sanitizer-only | Capacity/race/PI tests, traces, and limits are complete. **Core isolated queue/PI paths are hardware-verified; integrated stress remains pending.** |
+| Measured switch latency, jitter, and deadline misses under stress | M6, M10-M12 | M6 target validation confirms a deliberate deadline miss and 4 ms/5 ms periodic releases across wrap; overrun/skipped-release evidence remains host-only, and calibrated samples are pending | Repeated calibrated raw target evidence meets the protocol. **Not defensible.** |
 
 “Deterministic” requires bounded resources/paths, explicit exhaustion, no runtime
 allocation, analyzed masking/PI scope, and repeatable worst-case-oriented tests.
@@ -478,8 +796,8 @@ evidence and overload behavior, not a universal certification guarantee.
 
 ## 6. Immediate direction
 
-Before M3, close the available hardware evidence for M1 and M2: flash the exact ELF,
-verify heartbeat/reset/MSP, and use the debugger to inspect a synthetic TCB and its
-aligned initial frame. Do not mark either milestone COMPLETE from host/build evidence.
-M3 may then add only the portable bitmap scheduler and its tests; BASEPRI and
-preemption remain M4/M5 work.
+M5-M8 are closed with repeated physical STM32F446RE debugger-reset evidence. M8's
+physical evidence is limited to its isolated inversion/PI/restoration scenario;
+multiple mutex ownership, transitive PI, and M7 wait-list reordering remain
+host/sanitizer-only. Remaining work includes broader M4 urgent-IRQ/masked-duration
+evidence, calibrated M10 timing, cold-power-cycle evidence, and M9+ integration/features.

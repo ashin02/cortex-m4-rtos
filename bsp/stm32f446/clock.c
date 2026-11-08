@@ -7,13 +7,10 @@
 
 enum {
     HSI_FREQUENCY_HZ = 16000000UL,
-    HEARTBEAT_TICK_HZ = 1000UL,
     CLOCK_READY_TIMEOUT = 1000000UL
 };
 
 uint32_t SystemCoreClock = HSI_FREQUENCY_HZ;
-
-static volatile uint32_t heartbeat_ticks;
 
 bool system_clock_init(void)
 {
@@ -57,31 +54,4 @@ bool system_clock_init(void)
     AERORTOS_SCB->VTOR = 0x08000000UL;
     SystemCoreClock = HSI_FREQUENCY_HZ;
     return true;
-}
-
-bool systick_heartbeat_init(void)
-{
-    const uint32_t reload = SystemCoreClock / HEARTBEAT_TICK_HZ;
-
-    if ((reload == 0UL) || (reload > 0x01000000UL)) {
-        return false;
-    }
-
-    heartbeat_ticks = 0UL;
-    AERORTOS_SYSTICK->LOAD = reload - 1UL;
-    AERORTOS_SYSTICK->VAL = 0UL;
-    AERORTOS_SYSTICK->CTRL = AERORTOS_SYSTICK_CTRL_CLKSOURCE_Msk |
-                             AERORTOS_SYSTICK_CTRL_TICKINT_Msk |
-                             AERORTOS_SYSTICK_CTRL_ENABLE_Msk;
-    return true;
-}
-
-uint32_t bsp_millis(void)
-{
-    return heartbeat_ticks;
-}
-
-void SysTick_Handler(void)
-{
-    ++heartbeat_ticks;
 }

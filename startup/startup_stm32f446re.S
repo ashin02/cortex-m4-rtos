@@ -128,6 +128,11 @@ _vector_table:
 .type Reset_Handler, %function
 .thumb_func
 Reset_Handler:
+    ldr r0, =0xE000ED08
+    ldr r1, =_vector_table
+    str r1, [r0]
+    dsb
+    isb
     ldr r0, =_sidata
     ldr r1, =_sdata
     ldr r2, =_edata
@@ -156,9 +161,7 @@ Reset_Handler:
     .thumb_set \handler, Default_Handler
 .endm
 
-weak_alias SVC_Handler
 weak_alias DebugMon_Handler
-weak_alias PendSV_Handler
 weak_alias WWDG_IRQHandler
 weak_alias PVD_IRQHandler
 weak_alias TAMP_STAMP_IRQHandler
