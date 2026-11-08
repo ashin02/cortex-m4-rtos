@@ -19,6 +19,19 @@ queues also pass their isolated physical acceptance test and reset rerun. M8 bou
 priority-inheritance mutexes pass their isolated physical acceptance test and an
 identical debugger-reset rerun. Broader multiple-ownership, transitive-PI, and M7
 wait-list-reordering coverage remains separately supported by host/sanitizer tests.
+At the implementation level, every milestone M1 through M8 is present. The
+M5-M8 isolated hardware images exercise the integrated M1-M8 startup, task,
+scheduler, interrupt, timing, queue, and mutex paths; M1-M4 do not have separate
+standalone hardware acceptance records.
+M9 supplies a deterministic integrated host regression and an isolated mixed-feature
+target image. The physical STM32F446RE image passed with 69 checks, zero failures,
+all completion flags, expected counters and trace, and an identical debugger-reset
+rerun. Host-only scenarios remain identified separately below.
+M10's original instrumented firmware also passed physical STM32F446RE acceptance
+and a debugger-reset rerun with calibrated DWT measurements. A subsequent bounded-
+statistics improvement preserves all observations in aggregate statistics after raw
+storage fills. The corrected revision passed physical acceptance with 80 checks,
+zero failures, and identical debugger-reset reproduction.
 
 Status terms:
 
@@ -43,12 +56,15 @@ observed maximum is not a mathematical WCET bound.
 | Periodic time/deadlines | COMPLETE | Physical STM32F446RE M6 acceptance image: 49 passes, zero failures, 21 SysTick IRQs, one preemption, 17 idle entries, one deliberate high-priority deadline miss, and verified 4 ms/5 ms releases across tick wrap; debugger-reset rerun matched |
 | Bounded message queues | COMPLETE | Physical STM32F446RE M7 acceptance image: 40 passes, zero failures, one preemption, one blocked send, two blocked receives, expected nine-event trace, empty queue/no waiters, and identical debugger-reset rerun |
 | PI mutexes | COMPLETE | Physical STM32F446RE M8 acceptance image: completion magic `0x4D385041`, 43 passes, zero failures, one boost/restoration/block/preemption, all completion flags, empty mutex ownership/waiters, restored base priorities, expected nine-event trace, and identical debugger-reset rerun; multiple ownership, transitive PI, and M7 wait-list reordering remain host/sanitizer evidence |
-| Tests and measurements | PARTIAL | Host/sanitizer/static suites and isolated M5 physical target test pass; calibrated timing samples remain absent |
+| Integrated regression | COMPLETE | Eight host and sanitizer binaries pass after M10 additions; physical M9 passed 69/0 with three preemptions, two blocks/wakeups/queue operations/releases, one PI boost/restoration, all flags, and identical reset trace |
+| DWT timing instrumentation | COMPLETE — HARDWARE VERIFIED | Original M10 firmware supplies the verified PendSV/dispatch/periodic/synchronization and 9-cycle DWT-overhead baseline; the corrected aggregate-statistics revision passed 80/0 twice with 104 critical observations summarized across a 64-sample raw buffer |
+| Tests and measurements | PARTIAL | Host/sanitizer/static suites and isolated M5-M10 physical acceptance records pass; M10 observed maxima are not WCET and M11/M12 workload/stress evidence remains absent |
 | Flight-like workload | MISSING | `flight/*.c` are comments only |
 | Public finalization | BLOCKED | Requires completed evidence and explicit README authorization |
 
-M0 and M5-M8 are complete. M1-M4 retain their separately recorded statuses; M5
-target evidence does not automatically close their broader milestone criteria. M9
+M0 and M5-M10 are complete. M1-M4 are implemented and exercised through the later
+hardware images, but retain their separately recorded standalone verification
+limitations. M10 and its aggregate-statistics revision are hardware verified. M11
 and later remain out of scope.
 
 ## 2. Scope and final requirements
@@ -313,6 +329,52 @@ alternatives were not recorded in the repository.
   remains O(1); ordered insertion/reordering, ownership scans, restoration, and
   transitive propagation are O(8), with nested propagation bounded by eight tasks.
   These are fixed system bounds, not unbounded asymptotic operations.
+
+### ED15 — M9 deterministic integration regression (implemented; target-verified)
+
+- Add one host executable dedicated to cross-milestone interactions while retaining
+  every M1-M8 unit/regression binary. Schedules are explicit and repeatable; no
+  randomized concurrency or timing-dependent host sleeps are used.
+- Host scenarios cover M5+M6 wrap/preemption/deadline behavior, M6+M7 queue-blocked
+  periodic overrun/skipped release, M7+M8 queue waiter reordering after donation,
+  M5+M8 multiple ownership/restoration, and a combined M6+M7+M8 queue/PI handoff.
+  Existing suites remain authoritative for invalid arguments/states, task and mutex
+  capacity, deadlock rejection, FIFO ordering, stack guards, and handler boundaries.
+- The isolated target schedule uses explicit high/consumer/low completion flags.
+  The high periodic task never spins while lower-priority work is unfinished: after
+  its first job it blocks in `aerortos_periodic_wait_next`, allowing the consumer and
+  low task to finish and block before the second release validates and publishes.
+- Completion magic is gated by the exact assertion count, zero failures, all flags,
+  exact counters, empty queue/wait lists, released mutex ownership, restored base
+  priorities, scheduler/queue/mutex/stack invariants, PSP Thread mode, unmasked
+  BASEPRI, and the exact trace. Cross-build/static inspection is not physical-board
+  validation; only recorded GDB results may close M9.
+
+### ED16 — M10 opt-in DWT measurement (implemented and accepted)
+
+- `AERORTOS_ENABLE_TIMING` keeps hot-path instrumentation out of normal M1-M9
+  images. The M10 image enables DWT CYCCNT only after `SystemCoreClock` matches the
+  expected 16 MHz HSI configuration and verifies that the counter advances.
+- Raw unsigned cycle subtraction is valid across one 32-bit wrap. At 16 MHz the
+  unambiguous interval is less than about 268 seconds; each measured interval is far
+  shorter. Integer microsecond conversion uses 64-bit intermediate arithmetic.
+- Six fixed-capacity series retain at most 64 raw samples. Observation count,
+  64-bit total, minimum, maximum, and integer mean continue across raw-buffer
+  saturation; retained and dropped counts remain separate. Total, observation
+  count, and dropped count clamp at their integer maxima and set explicit saturation
+  flags rather than wrapping. Thirty-two periodic records retain task ID, scheduled
+  tick, actual release tick/cycle, and execution-start cycle. There is no allocation,
+  printing, or UART activity.
+- PendSV instrumentation is assembly-local and preserves the integer context: the
+  start read occurs at handler entry before software save, and the end hook occurs
+  after R4-R11/PSP restoration but before EXC_RETURN. It therefore measures the
+  instrumented PendSV path, excluding hardware exception entry/return and the first
+  SVC launch; it is not full event-to-task latency.
+- READY and synchronization timestamps are recorded at enqueue/wake. Their end is
+  the pre-EXC_RETURN hook, a close proxy for execution start that excludes hardware
+  exception return instructions. Periodic records keep scheduled, actual-release,
+  and start boundaries distinct. Outermost critical duration ends immediately before
+  restoring prior BASEPRI. M6 deadline policy is unchanged; M10 mirrors miss totals.
 
 ## 4. Milestone plan
 
@@ -695,37 +757,155 @@ invariants tested and BASEPRI validated before interrupt-driven preemption.
 
 Phase 3 expands the tests introduced in M1-M8; it does not postpone them.
 
-#### M9 — Integrated correctness and regression — MISSING
+#### M9 — Integrated correctness and regression — COMPLETE
 
 - **Objective:** make invariants and failure behavior continuously reproducible.
-- **Relevant files:** all `tests/*.c`, kernel modules, `exception.c`, new build/CI scripts.
-- **Decisions/tradeoffs:** fast portable host suite plus separate target exception/IRQ
-  suite; deterministic schedules and recorded seeds over opaque random stress.
-- **Acceptance:** one command runs clean build/host suite; target suite covers states,
-  bitmap, wakeup races, exhaustion, stack guards, faults, wrap, queue contention, PI
-  restoration, and long-running invariant checks; failures preserve evidence.
-- **Verification evidence:** logs with commit/tools/seeds/configuration, fault records,
-  and repeated target regression runs.
+- **Relevant files:** `tests/integration_test.c`,
+  `tests/target/m9_integration_test.c`, all prior host/target tests, and `Makefile`.
+- **Coverage matrix:**
 
-#### M10 — Latency, jitter, and deadline measurement — MISSING
+  | Interaction | Deterministic coverage |
+  |---|---|
+  | M5 + M6 | Higher-priority periodic release preempts a low task across 32-bit wrap; deadline miss is counted strictly after its deadline; completion blocks and the next phase wakes/preempts with zero jitter |
+  | M6 + M7 | An active periodic task blocks on an empty queue across its next phase; exactly one overrun/skipped release is recorded without a duplicate wake, then queue send wakes it to consume and complete |
+  | M7 + M8 | A mutex donation changes the effective priority of a queue-blocked owner and moves it ahead of another receiver; queue, mutex, scheduler, wait-object, and wait-kind invariants are checked |
+  | M5 + M8 | Preemption and blocking exercise two owned mutexes, independent donations, partial then full restoration, ownership handoff, and a separate transitive owner chain; the retained M8 suite also covers deadlock rejection |
+  | M6 + M7 + M8 | A periodic high task blocks on a mutex owned by a queue-blocked low task; donation reorders/wakes the low task, queue traffic completes, unlock hands ownership to high, priorities restore, and the periodic job completes |
+  | Regression/fault edges | Existing M1-M8 suites retain invalid state/context, task/mutex capacity, deadlock-cycle rejection, stack guards, FIFO/bitmap checks, and handler boundaries; M9 also rechecks nested prior-BASEPRI restoration |
+
+- **Target scenario:** time begins at `UINT32_MAX-2`. The consumer (priority 5)
+  blocks on a one-element queue; low (priority 10) owns the mutex; periodic high
+  (priority 2, period 5, deadline 4, initial delay 10) releases at tick 7 after wrap,
+  blocks on the mutex, and boosts low. Low sends one value, wakes the consumer, and
+  transfers the mutex. High completes job one and blocks until tick 12. Consumer and
+  low set their completion flags and block. High's second release verifies final
+  state and is the only publisher of completion magic.
+- **Static target acceptance contract:** completion magic `0x4D395041`; 69 passes;
+  zero failures; high/consumer/low flags all one; counters are three preemptions,
+  two blocks, two wakeups, two queue operations, one PI boost, one restoration, and
+  two periodic releases. The exact eight-event trace is
+  `B9000001, C9000001, A9000001, C9000002, A9000002, B9000002, C9000003,
+  A9000003`.
+- **Verification obtained (2026-11-07):** `make test` passes all seven binaries;
+  `make test-sanitize` passes all seven with ASan/UBSan and leak detection disabled.
+  `make clean && make verify` passes the warning-as-error Cortex-M4 soft-float build,
+  all host tests, vector/link/static symbol checks, no-undefined-symbol checks, and
+  the actual-object BASEPRI assembly check. `make m5-hardware-test
+  m6-hardware-test m7-hardware-test m8-hardware-test m9-hardware-test` passes every
+  isolated cross-build/static check using Arm GCC 14.2.1. The M9 ELF is 9,280 bytes
+  text, 8 bytes data, and 6,240 bytes BSS; its strong SysTick handler and SVC/PendSV
+  symbols are present, and queue/mutex objects reference no allocation or implicit
+  memory routines. No kernel defect was found; no kernel source changed.
+- **Physical acceptance passed (2026-11-07):** STM32F446RE completion magic was
+  `0x4D395041`, with 69 passes, zero failures, three preemptions, two blocking
+  events, two wakeups, two queue operations, one PI boost, one restoration, two
+  periodic releases, eight trace entries, and all high/consumer/low completion
+  flags equal to one. The queue was empty with no waiters and the mutex was unowned
+  with no waiters. The trace was `B9000001, C9000001, A9000001, C9000002,
+  A9000002, B9000002, C9000003, A9000003`. Completion magic, 69/0 counts, and the
+  trace reproduced identically after debugger reset. This physical evidence covers
+  only the isolated M9 target scenario; wrap/deadline/overrun combinations,
+  multi-mutex restoration, transitive PI, deadlock, and queue reorder breadth remain
+  host/sanitizer evidence as identified in the coverage matrix.
+
+#### M10 — Latency, jitter, and deadline measurement — COMPLETE — HARDWARE VERIFIED
 
 - **Objective:** measure the distinct real-time quantities in resume bullet five.
-- **Relevant files:** `arch/cortex_m4/port.c`, `bsp/stm32f446/gpio.c`,
-  `kernel/monitor.c`, timing/overload tests, new analysis scripts/results location.
-- **Decisions/tradeoffs:** calibrated DWT timestamps, atomic GPIO corroboration, fixed
-  trace/histogram capacity, explicit overflow and instrumentation costs.
-- **Acceptance:** separately define/record context-switch execution, interrupt-to-task
-  dispatch, signed periodic release jitter, end-to-end response, and deadline totals/
-  misses; overhead/wrap are characterized; raw data is exportable.
-- **Verification evidence:** DWT cross-check with timer/logic analyzer; multiple cold
-  boots; recorded board/probe/clocks/compiler/flags/IRQ priorities; sample counts, raw
-  data, analysis version, drops, and justified min/median/tail/max summaries.
+- **Relevant files:** `include/aerortos/{cycle_counter,monitor}.h`,
+  `arch/cortex_m4/{cycle_counter.c,context_switch.S,critical_section.c}`,
+  `kernel/{monitor,scheduler,timer,deadline,queue,mutex}.c`, `tests/timing_test.c`,
+  `tests/target/m10_timing_test.c`, and `Makefile`.
+- **Metric boundaries:**
+
+  | Metric | Start | End / interpretation |
+  |---|---|---|
+  | Instrumented PendSV cycles | First DWT read at `PendSV_Handler` entry | DWT read after software restore/PSP update, before EXC_RETURN; includes hook entry and scheduler, excludes hardware exception entry/return |
+  | READY-to-running dispatch | Scheduler changes/enqueues task as READY | Same pre-EXC_RETURN hook for selected task; includes pending/interference and PendSV work, excludes exception return |
+  | Synchronization wake | Queue or mutex removes/clears waiter immediately before scheduler wake | Same selected-task boundary; tagged subset of dispatch latency |
+  | Periodic release-to-start | SysTick observes phase and records actual release cycle | Same selected-task boundary; record separately retains scheduled tick and actual release tick/cycle |
+  | Critical-section duration | First/outermost monitored critical entry after masking | Immediately before outermost prior-BASEPRI restoration; nested regions collapse into the outer sample |
+  | Deadline statistics | Existing M6 strict-after-deadline observation | Existing per-task counters remain authoritative; monitor mirrors total observed misses without policy changes |
+
+- **Benchmark:** six participants exercise 16 equal-priority voluntary yields, a
+  higher-priority mutex wake/preemption, queue receiver wake, eight 6 ms periodic
+  releases, and one controlled deadline miss. Thirty-two back-to-back DWT samples
+  calibrate timestamp-read overhead. Each participant sets an explicit flag and
+  increments a protected completion count; the high controller blocks and is woken
+  only by the final participant before validating and publishing.
+- **Acceptance contract:** completion magic `0x4D313041`, 80 passes, zero
+  failures, six participant flags/count, 16 yields, two queue operations, one mutex
+  handoff, eight periodic jobs, 32 overhead samples, at least eight periodic raw
+  records, nonempty metric series, exactly one mirrored deadline miss, empty queue,
+  unowned mutex, intact stacks, and scheduler/queue/mutex/monitor invariants.
+- **Physical acceptance (original firmware, 2026-11-08):** STM32F446RE completed
+  with magic `0x4D313041`, 80 passes, zero failures, six participants, 16 voluntary
+  yields, two queue operations, one mutex handoff, eight periodic jobs, and one
+  deliberate deadline miss. All six completion flags were set. The configured and
+  validated core clock was 16 MHz and the measured DWT timestamp-read overhead was
+  nine cycles. Completion values were identical after debugger reset.
+- **Original verified timing baseline:** the following PendSV, dispatch, periodic,
+  synchronization, and DWT-overhead measurements belong to the accepted original
+  firmware. They were not repeated on the final aggregate-statistics firmware.
+
+  | Metric | Samples | Mean | Observed maximum |
+  |---|---:|---:|---:|
+  | Instrumented PendSV software overhead | 42 | 27.93 µs | 30.69 µs |
+  | READY-to-dispatch | 28 | 79.66 µs | 219.69 µs |
+  | Periodic release-to-dispatch | 8 | 55.33 µs | 55.38 µs |
+  | Synchronization wake-to-dispatch | 2 | 143.75 µs | 231.38 µs |
+  | Outermost critical-section duration | 64 retained | 13.33 µs | 57.25 µs |
+
+  The boundaries are exactly those in the metric table above. The PendSV number is
+  software handler time to the pre-EXC_RETURN hook, not full switch-to-resume
+  latency. Dispatch metrics also stop before hardware exception return. The
+  critical series filled its 64-entry raw buffer and dropped 40 later observations;
+  the reported original mean and maximum therefore describe the 64 retained samples,
+  not all 104 observations. All figures include instrumentation effects except that
+  timestamp-read overhead is reported separately. They are observations from this
+  firmware/workload/debug configuration, not proven WCET bounds.
+- **Post-acceptance monitor revision (2026-11-08):** raw storage remains 64 samples,
+  but aggregates now cover every valid observation after raw saturation. Separate
+  observation/retained/dropped counts and explicit saturating total/count behavior
+  prevent wraparound. Host tests cover the 65th sample's effect on aggregates,
+  64-bit total and 32-bit counter saturation, DWT wrap subtraction, and full reset.
+- **Revised-firmware hardware finding (2026-11-08):** the first board run reached
+  79/80 because the target-only acceptance check required the final count of 104
+  critical observations while only 101 had occurred at that point in `high_entry`.
+  The stable completion marker subsequently showed the correct final state: 104
+  observations, 64 retained, and 40 dropped. No kernel, instrumentation, or
+  statistics defect was present. The test now uses its actual assertion-time state
+  to require a full raw buffer, at least one dropped observation, exact
+  `observation = retained + dropped` consistency, nonzero total, mean within
+  minimum/maximum via division-free total bounds, and no arithmetic-saturation
+  flags. This remains one assertion, preserving the 80-check contract. The
+  division-free form also preserves the freestanding no-runtime link contract.
+  GDB showed 101 observations at the premature assertion and 104 at completion.
+- **Final corrected-firmware acceptance (2026-11-08):** STM32F446RE completed with
+  magic `0x4D313041`, 80 passes, zero failures, six completed participants, and one
+  deliberate deadline miss. The critical-section series contained 104 observations,
+  64 retained raw samples, 40 dropped raw samples, 23,161 total cycles, an 80-cycle
+  minimum, a 916-cycle maximum, and zero saturation flags. At the verified 16 MHz
+  core clock this is 5.00 µs minimum, 13.92 µs aggregate mean, and 57.25 µs observed
+  maximum. All 104 observations contribute to count, total, minimum, maximum, and
+  mean even though bounded raw storage retains only the first 64; `dropped` describes
+  raw-sample loss, not aggregate-statistics loss. Completion magic, 80/0 counts, and
+  these results reproduced identically after debugger reset.
+- **Automated verification of the revision (2026-11-08):** all eight M1-M10 host
+  binaries pass normally and with ASan/UBSan. `make clean && make verify` passes the
+  warning-as-error default ARM build, host suite, ELF/vector/symbol checks, and
+  actual-object BASEPRI check. Isolated M5, M6, M7, M8, M9, and revised M10 target
+  builds/static checks all pass. The normal uninstrumented image remains 4,088 bytes
+  text, 8 bytes data, and 3,596 bytes BSS. The acceptance-fixed M10 image is 10,984
+  bytes text, 8 bytes data, and 11,480 bytes BSS; it has no undefined symbols or
+  monitor references to allocation/printf, and its PendSV disassembly retains the expected
+  PSP save/restore and pre-EXC_RETURN monitor hook. These are static/cross-build
+  results complement the final physical validation above.
 
 | Metric | Start | End |
 |---|---|---|
-| Context-switch execution | PendSV save-path entry | Restore/exception-return boundary |
-| Preemption/dispatch latency | Event makes higher-priority task READY | First task instruction/marker |
-| Periodic release jitter | Scheduled absolute release | First execution; signed difference |
+| Context-switch execution | PendSV save-path entry | Restore/pre-exception-return boundary |
+| Preemption/dispatch latency | Event makes higher-priority task READY | Pre-exception-return measurement hook |
+| Periodic release jitter | Scheduled phase plus actual ISR release | Pre-exception-return measurement hook |
 | End-to-end response | Defined input/release | Defined output/completion |
 | Deadline miss | Completion exceeds absolute deadline | Count once with totals retained |
 
@@ -782,11 +962,11 @@ retain raw machine-readable samples, and provide a reproducible analysis command
 
 | Final requirement | Required milestones | Current evidence | Completion criterion / verdict |
 |---|---|---|---|
-| Deterministic preemptive STM32 RTOS with synchronization | M1-M9, M11-M12 | M5 preemption, M7 queues, and the isolated M8 PI acceptance scenario pass on STM32; broader M8 multiple-ownership/transitive-PI/queue-reordering coverage is host/sanitizer-only | Bounded integrated kernel/workload passes target regression and stress. **Not yet defensible as the final claim.** |
-| PendSV/PSP context switching across preemption | M2, M4-M5, M9-M10 | M5 physical target test passes 130 switches, register/stack checks, ISR preemption, and reset rerun | Functional switching is proven; calibrated switch measurement and later integrated regression remain. **Functionally supported, timing unproven.** |
+| Deterministic preemptive STM32 RTOS with synchronization | M1-M9, M11-M12 | M5 preemption, M7 queues, M8 PI, and integrated M9 pass repeated STM32 debugger-reset acceptance; broader multi-mutex/transitive/deadlock coverage remains host/sanitizer-only | Bounded integrated kernel/workload passes later target stress. **Core integrated behavior is supported; M12 stress remains.** |
+| PendSV/PSP context switching across preemption | M2, M4-M5, M9-M10 | M5 physical target test passes 130 switches and context checks; accepted M10 firmware measured 42 instrumented PendSV samples with 27.93 µs mean and 30.69 µs observed maximum | Functional switching and the scoped instrumented measurement are supported; the maximum is not WCET. |
 | Fixed-priority bitmap ready queues with scoped O(1) dispatch | M3-M5, M9 | Host suites plus physical FIFO/preemption/idle trace pass | ED1 operations and invariants are proven; broader integrated regression remains. **Functionally supported.** |
-| Bounded queues and PI mutexes | M7-M9, M12 | M7 queues and the isolated M8 inversion/PI/restoration scenario pass repeated physical acceptance; M8 multiple ownership, transitive propagation, and queue integration remain host/sanitizer-only | Capacity/race/PI tests, traces, and limits are complete. **Core isolated queue/PI paths are hardware-verified; integrated stress remains pending.** |
-| Measured switch latency, jitter, and deadline misses under stress | M6, M10-M12 | M6 target validation confirms a deliberate deadline miss and 4 ms/5 ms periodic releases across wrap; overrun/skipped-release evidence remains host-only, and calibrated samples are pending | Repeated calibrated raw target evidence meets the protocol. **Not defensible.** |
+| Bounded queues and PI mutexes | M7-M9, M12 | M7/M8 isolated images and integrated M9 queue/PI handoff pass repeated physical acceptance; multiple ownership, transitive propagation, and deadlock breadth remain host/sanitizer-only | Capacity/race/PI tests, traces, and limits are complete. **Integrated core paths are hardware-verified; stress remains pending.** |
+| Measured switch latency, jitter, and deadline misses under stress | M6, M10-M12 | Original M10 firmware supplies the repeated calibrated PendSV/dispatch/periodic/synchronization baseline; corrected final firmware verifies 104-observation critical aggregates and one deadline miss with an identical reset rerun | M10 synthetic benchmark evidence is complete; representative M11 workloads and M12 stress/WCET analysis remain. |
 
 “Deterministic” requires bounded resources/paths, explicit exhaustion, no runtime
 allocation, analyzed masking/PI scope, and repeatable worst-case-oriented tests.
@@ -796,8 +976,7 @@ evidence and overload behavior, not a universal certification guarantee.
 
 ## 6. Immediate direction
 
-M5-M8 are closed with repeated physical STM32F446RE debugger-reset evidence. M8's
-physical evidence is limited to its isolated inversion/PI/restoration scenario;
-multiple mutex ownership, transitive PI, and M7 wait-list reordering remain
-host/sanitizer-only. Remaining work includes broader M4 urgent-IRQ/masked-duration
-evidence, calibrated M10 timing, cold-power-cycle evidence, and M9+ integration/features.
+M1-M10 are implemented. M9 and M10 are complete with repeated physical STM32F446RE
+debugger-reset evidence; M10's original baseline and final aggregate-statistics
+evidence remain distinguished above. Scoped host-only scenarios remain identified
+separately. M11 and later milestones remain unstarted and out of this change's scope.

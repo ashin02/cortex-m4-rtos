@@ -7,6 +7,9 @@
 #include "aerortos/queue.h"
 #include "aerortos/scheduler.h"
 #include "aerortos/task.h"
+#if defined(AERORTOS_ENABLE_TIMING)
+#include "aerortos/monitor.h"
+#endif
 
 #define AERORTOS_QUEUE_SIGNATURE UINT32_C(0x41525137)
 
@@ -109,6 +112,9 @@ static void wake_first_locked(wait_list_t list)
     wait_remove_locked(list, task);
     task->wait_object = NULL;
     task->wait_kind = (uint8_t)AERORTOS_WAIT_NONE;
+#if defined(AERORTOS_ENABLE_TIMING)
+    aerortos_monitor_sync_wake(task);
+#endif
     (void)aerortos_scheduler_make_ready(task);
 }
 

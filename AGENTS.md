@@ -23,15 +23,24 @@ the expected nine-event trace). M8 bounded non-recursive priority-inheritance mu
 passed their isolated physical STM32F446RE acceptance image and debugger-reset rerun
 (43 checks, zero failures, one boost/restoration/block/preemption, and the expected
 nine-event trace). Multiple mutex ownership, transitive PI, and M7 wait-list
-reordering remain host/sanitizer-only evidence. Calibrated performance measurement,
-flight, and later tests remain scaffolds. Never generalize isolated M5-M8 hardware
-evidence beyond its recorded scope.
+reordering remain host/sanitizer-only evidence. M9 deterministic integrated host
+regression and mixed periodic/queue/PI target image passed physically with 69 checks,
+zero failures, expected counters/flags/trace, and an identical debugger-reset rerun.
+M10 provides opt-in DWT timing, bounded RAM statistics, host mocks, and an isolated
+benchmark. Its original firmware passed physical STM32F446RE acceptance twice with
+80 checks, zero failures, a validated 16 MHz clock, and 9-cycle DWT-read overhead.
+The later aggregate-statistics revision retains only 64 raw samples but summarizes
+all observations with saturating counters. The corrected revision passed 80/0 on
+STM32F446RE and reproduced identically after debugger reset: 104 critical-section
+observations, 64 retained, 40 dropped, 23,161 total cycles, 80/916-cycle minimum/
+maximum, and zero saturation flags. Never generalize isolated hardware evidence
+beyond its recorded scope.
 
 ## Navigation map
 
 | Path | Responsibility / symbols |
 |---|---|
-| `Makefile` | Strict soft-float Cortex-M4 build; host/sanitizer suites; default plus isolated M5/M6/M7/M8 target images |
+| `Makefile` | Strict soft-float Cortex-M4 build; host/sanitizer suites; default plus isolated M5-M10 target images |
 | `linker/stm32f446re.ld` | 512 KiB Flash/128 KiB SRAM layout; vector/MSP/RAM assertions |
 | `startup/startup_stm32f446re.S` | `_vector_table`, explicit Flash VTOR, C data init, weak unused-IRQ defaults; SysTick must resolve strongly |
 | `include/aerortos/{cortex_m4,stm32f446re,platform}.h` | Minimal project-owned core/device registers and M1 BSP API |
@@ -39,6 +48,7 @@ evidence beyond its recorded scope.
 | `arch/cortex_m4/context_switch.S` | `SVC_Handler`, `PendSV_Handler`; PSP R4-R11 restore/save and fixed basic-frame exception return |
 | `arch/cortex_m4/port.c` | Initial frame, exception priorities, PendSV request, SVC launch, handler-mode query |
 | `arch/cortex_m4/critical_section.c` | `aerortos_critical_enter/exit`; nested prior-BASEPRI restoration |
+| `arch/cortex_m4/cycle_counter.c` | Checked DWT CYCCNT initialization, reads, wrap-safe elapsed cycles, and conversion |
 | `arch/cortex_m4/exception.c` | `platform_panic`, default/NMI/HardFault/MemManage/BusFault/UsageFault terminal handlers |
 | `include/aerortos/task.h` | Static TCB/config API, base/effective priority, wait kind, owned mutexes, periodic counters, and bounded timing-event ring |
 | `include/aerortos/scheduler.h` | Scheduler add/start/yield/block/wake/switch and effective-priority reposition APIs |
@@ -53,7 +63,7 @@ evidence beyond its recorded scope.
 | `kernel/queue.c` | BASEPRI-protected ring buffer and effective-priority/FIFO sender/receiver wait lists, including PI reordering |
 | `kernel/mutex.c` | BASEPRI-protected ownership, priority/FIFO waiters, bounded transitive PI, restoration, handoff, and cycle rejection |
 | `kernel/semaphore.c` | Optional semaphore support; not required by current resume scope |
-| `kernel/monitor.c` | Runtime, stack, latency, jitter, and deadline instrumentation |
+| `include/aerortos/monitor.h`, `kernel/monitor.c` | Opt-in bounded raw/aggregate timing metrics and hot-path hooks |
 | `bsp/stm32f446/clock.c` | `system_clock_init` (16 MHz HSI) and explicit Flash VTOR setup |
 | `bsp/stm32f446/gpio.c` | `gpio_led_init`, `gpio_led_toggle` for NUCLEO LD2 on PA5 |
 | `bsp/stm32f446/timer.c` | Exact 1 kHz SysTick configuration/handler and legacy `bsp_millis` wrapper |
@@ -64,6 +74,9 @@ evidence beyond its recorded scope.
 | `tests/target/m6_periodic_test.c` | Isolated wrap/release/preemption/miss/recovery test with GDB counters and traces |
 | `tests/queue_test.c`, `tests/target/m7_queue_test.c` | Host queue edge/contention regression and isolated target blocking/preemption image |
 | `tests/mutex_test.c`, `tests/target/m8_mutex_test.c` | Host PI/restoration/queue-integration regression and isolated inversion/PI target image |
+| `tests/integration_test.c` | M9 deterministic periodic, queue, PI, wrap, overrun, and invariant interaction regression |
+| `tests/target/m9_integration_test.c` | Isolated mixed periodic-wrap, queue wake, mutex PI/handoff/restoration image with completion flags, counters, and fixed trace |
+| `tests/timing_test.c`, `tests/target/m10_timing_test.c` | DWT/statistics host regression and isolated six-participant timing benchmark |
 | Other `tests/*.c` | Later-milestone test specifications only |
 | `roadmap.md` | Status, decisions, milestones, risks, and verification evidence |
 
@@ -138,6 +151,13 @@ the fixed integer-only Thread/PSP basic-frame return value `0xFFFFFFFD`.
 - Start with a periodic tick. Tickless/one-shot scheduling is optional only after
   the tick-based kernel is correct and measured.
 - Define the FPU save/restore policy before allowing floating-point task code.
+- M10 timing is enabled only with `AERORTOS_ENABLE_TIMING`. Raw DWT subtraction is
+  valid for intervals shorter than one 32-bit wrap; at 16 MHz that is about 268 s.
+  PendSV samples exclude hardware exception entry/return and observed maxima are not
+  WCET bounds. Each series retains 64 raw samples while aggregate count/total/min/max
+  continue beyond capacity; retained and dropped counts are distinct and integer
+  exhaustion saturates with flags. Normal M1-M9 images retain the uninstrumented
+  context-switch path.
 
 ## Build, test, and change rules
 
@@ -162,6 +182,14 @@ Commands from the repository root:
 - Isolated M8 target build/disassembly: `make m8-hardware-test`
 - Flash isolated M8 image: `make flash-m8-test`
 - Debug isolated M8 image: run `make openocd`, then `make gdb-m8-test` (use
+  `GDB=gdb-multiarch` when needed)
+- Isolated M9 target build/static checks: `make m9-hardware-test`
+- Flash isolated M9 image: `make flash-m9-test`
+- Debug isolated M9 image: run `make openocd`, then `make gdb-m9-test` (use
+  `GDB=gdb-multiarch` when needed)
+- Isolated M10 timing build/static checks: `make m10-hardware-test`
+- Flash isolated M10 image: `make flash-m10-test`
+- Debug isolated M10 image: run `make openocd`, then `make gdb-m10-test` (use
   `GDB=gdb-multiarch` when needed)
 - Flash with ST-Link/OpenOCD: `make flash`
 - Debug: run `make openocd`, then `make gdb` in another terminal. Override a missing

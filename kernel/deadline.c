@@ -5,6 +5,9 @@
 #include "aerortos/deadline.h"
 #include "aerortos/task.h"
 #include "aerortos/timer.h"
+#if defined(AERORTOS_ENABLE_TIMING)
+#include "aerortos/monitor.h"
+#endif
 
 static uint32_t saturating_increment(uint32_t value)
 {
@@ -63,6 +66,9 @@ void aerortos_deadline_check(aerortos_task_t *task, uint32_t now)
         task->deadline_miss_recorded = 1U;
         task->deadline_miss_count =
             saturating_increment(task->deadline_miss_count);
+#if defined(AERORTOS_ENABLE_TIMING)
+        aerortos_monitor_deadline_miss();
+#endif
         record_event(task, AERORTOS_TIMING_EVENT_DEADLINE_MISS, now,
                      task->absolute_deadline,
                      (int32_t)(now - task->absolute_deadline));

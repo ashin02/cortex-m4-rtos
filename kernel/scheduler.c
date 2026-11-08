@@ -8,6 +8,9 @@
 #include "aerortos/scheduler.h"
 #include "aerortos/task.h"
 #include "aerortos/timer.h"
+#if defined(AERORTOS_ENABLE_TIMING)
+#include "aerortos/monitor.h"
+#endif
 
 typedef struct {
     aerortos_task_t *head;
@@ -228,6 +231,9 @@ aerortos_scheduler_result_t aerortos_scheduler_yield(void)
         return AERORTOS_SCHEDULER_ERROR_STATE;
     }
     current->state = AERORTOS_TASK_READY;
+#if defined(AERORTOS_ENABLE_TIMING)
+    aerortos_monitor_task_ready(current);
+#endif
     aerortos_port_request_context_switch();
     aerortos_critical_exit(critical_state);
     return AERORTOS_SCHEDULER_OK;
@@ -275,6 +281,9 @@ aerortos_scheduler_result_t aerortos_scheduler_make_ready(aerortos_task_t *task)
     }
     task->state = AERORTOS_TASK_READY;
     enqueue_locked(task);
+#if defined(AERORTOS_ENABLE_TIMING)
+    aerortos_monitor_task_ready(task);
+#endif
     current = aerortos_current_task;
     should_preempt = (current != NULL) &&
                      ((current == idle_task) ||

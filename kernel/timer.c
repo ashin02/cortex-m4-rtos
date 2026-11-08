@@ -8,6 +8,9 @@
 #include "aerortos/scheduler.h"
 #include "aerortos/task.h"
 #include "aerortos/timer.h"
+#if defined(AERORTOS_ENABLE_TIMING)
+#include "aerortos/monitor.h"
+#endif
 
 static volatile uint32_t tick_count;
 static aerortos_task_t *periodic_tasks[AERORTOS_TASK_CAPACITY];
@@ -64,6 +67,9 @@ aerortos_timer_result_t aerortos_timer_register_task(aerortos_task_t *task)
     scheduled_tick = tick_count + task->initial_release_delay_ticks;
     if (task->initial_release_delay_ticks == 0U) {
         aerortos_deadline_release(task, scheduled_tick, tick_count);
+#if defined(AERORTOS_ENABLE_TIMING)
+        aerortos_monitor_periodic_release(task, scheduled_tick, tick_count);
+#endif
         task->next_release_tick = scheduled_tick + task->period_ticks;
     } else {
         task->next_release_tick = scheduled_tick;
@@ -95,6 +101,9 @@ void aerortos_timer_tick_isr(void)
                 aerortos_deadline_overrun(task, scheduled_tick, now);
             } else if (task->state == AERORTOS_TASK_BLOCKED) {
                 aerortos_deadline_release(task, scheduled_tick, now);
+#if defined(AERORTOS_ENABLE_TIMING)
+                aerortos_monitor_periodic_release(task, scheduled_tick, now);
+#endif
                 (void)aerortos_scheduler_make_ready(task);
             }
         }

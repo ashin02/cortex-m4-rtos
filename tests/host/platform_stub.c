@@ -9,6 +9,9 @@ volatile uint32_t aerortos_fault_code;
 uint32_t aerortos_host_basepri;
 uint32_t aerortos_host_pendsv_requests;
 bool aerortos_host_handler_mode;
+bool aerortos_host_dwt_available = true;
+uint32_t aerortos_host_cycle_counter;
+uint32_t aerortos_host_cycle_counter_step = 1U;
 void (*aerortos_host_queue_block_callback)(void);
 void (*aerortos_host_mutex_block_callback)(void);
 

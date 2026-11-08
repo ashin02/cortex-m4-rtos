@@ -8,6 +8,9 @@
 #include "aerortos/queue.h"
 #include "aerortos/scheduler.h"
 #include "aerortos/task.h"
+#if defined(AERORTOS_ENABLE_TIMING)
+#include "aerortos/monitor.h"
+#endif
 
 #define AERORTOS_MUTEX_SIGNATURE UINT32_C(0x41524D38)
 
@@ -378,8 +381,17 @@ aerortos_mutex_result_t aerortos_mutex_unlock(aerortos_mutex_t *mutex)
         waiter->wait_object = NULL;
         waiter->wait_kind = (uint8_t)AERORTOS_WAIT_NONE;
         owned_add_locked(waiter, mutex);
+#if defined(AERORTOS_ENABLE_TIMING)
+        if (!recompute_priority_locked(waiter, 0U)) {
+            aerortos_critical_exit(critical_state);
+            return AERORTOS_MUTEX_ERROR_STATE;
+        }
+        aerortos_monitor_sync_wake(waiter);
+        if (aerortos_scheduler_make_ready(waiter) != AERORTOS_SCHEDULER_OK) {
+#else
         if (!recompute_priority_locked(waiter, 0U) ||
             (aerortos_scheduler_make_ready(waiter) != AERORTOS_SCHEDULER_OK)) {
+#endif
             aerortos_critical_exit(critical_state);
             return AERORTOS_MUTEX_ERROR_STATE;
         }

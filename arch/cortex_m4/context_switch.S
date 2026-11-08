@@ -36,6 +36,12 @@ SVC_Handler:
 .type PendSV_Handler, %function
 .thumb_func
 PendSV_Handler:
+#if defined(AERORTOS_ENABLE_TIMING)
+    ldr r1, =0xE0001004
+    ldr r1, [r1]
+    ldr r2, =aerortos_monitor_pendsv_start_cycle
+    str r1, [r2]
+#endif
     mrs r0, psp
     ldr r3, =aerortos_current_task
     ldr r2, [r3]
@@ -50,6 +56,11 @@ PendSV_Handler:
     ldr r0, [r0, #AERORTOS_TCB_SAVED_PSP_OFFSET]
     ldmia r0!, {r4-r11}
     msr psp, r0
+#if defined(AERORTOS_ENABLE_TIMING)
+    push {r3, lr}
+    bl aerortos_monitor_pendsv_end
+    pop {r3, lr}
+#endif
     ldr lr, =AERORTOS_EXC_RETURN_THREAD_PSP
     bx lr
 1:

@@ -80,21 +80,47 @@ M8_HW_ASM_SOURCES := startup/startup_stm32f446re.S \
 M8_HW_OBJECTS := $(addprefix $(BUILD_DIR)/m8-hw/,$(M8_HW_C_SOURCES:.c=.o)) \
 	$(addprefix $(BUILD_DIR)/m8-hw/,$(M8_HW_ASM_SOURCES:.S=.o))
 M8_HW_DEPS := $(M8_HW_OBJECTS:.o=.d)
+M9_HW_C_SOURCES := tests/target/m9_integration_test.c \
+	arch/cortex_m4/exception.c arch/cortex_m4/critical_section.c \
+	arch/cortex_m4/port.c bsp/stm32f446/clock.c bsp/stm32f446/timer.c \
+	kernel/task.c kernel/scheduler.c kernel/queue.c kernel/mutex.c \
+	kernel/timer.c kernel/deadline.c
+M9_HW_ASM_SOURCES := startup/startup_stm32f446re.S \
+	arch/cortex_m4/context_switch.S
+M9_HW_OBJECTS := $(addprefix $(BUILD_DIR)/m9-hw/,$(M9_HW_C_SOURCES:.c=.o)) \
+	$(addprefix $(BUILD_DIR)/m9-hw/,$(M9_HW_ASM_SOURCES:.S=.o))
+M9_HW_DEPS := $(M9_HW_OBJECTS:.o=.d)
+M10_HW_C_SOURCES := tests/target/m10_timing_test.c \
+	arch/cortex_m4/exception.c arch/cortex_m4/critical_section.c \
+	arch/cortex_m4/cycle_counter.c arch/cortex_m4/port.c \
+	bsp/stm32f446/clock.c bsp/stm32f446/timer.c kernel/task.c \
+	kernel/scheduler.c kernel/queue.c kernel/mutex.c kernel/timer.c \
+	kernel/deadline.c kernel/monitor.c
+M10_HW_ASM_SOURCES := startup/startup_stm32f446re.S \
+	arch/cortex_m4/context_switch.S
+M10_HW_OBJECTS := $(addprefix $(BUILD_DIR)/m10-hw/,$(M10_HW_C_SOURCES:.c=.o)) \
+	$(addprefix $(BUILD_DIR)/m10-hw/,$(M10_HW_ASM_SOURCES:.S=.o))
+M10_HW_DEPS := $(M10_HW_OBJECTS:.o=.d)
 HOST_TESTS := $(BUILD_DIR)/host/task_test $(BUILD_DIR)/host/scheduler_test \
 	$(BUILD_DIR)/host/context_switch_test $(BUILD_DIR)/host/deadline_test \
-	$(BUILD_DIR)/host/queue_test $(BUILD_DIR)/host/mutex_test
+	$(BUILD_DIR)/host/queue_test $(BUILD_DIR)/host/mutex_test \
+	$(BUILD_DIR)/host/integration_test $(BUILD_DIR)/host/timing_test
 HOST_SANITIZED_TESTS := $(addsuffix _sanitized,$(HOST_TESTS))
 HOST_COMMON_SOURCES := tests/host/platform_stub.c kernel/task.c \
 	kernel/scheduler.c kernel/queue.c kernel/mutex.c kernel/timer.c kernel/deadline.c \
-	arch/cortex_m4/port.c arch/cortex_m4/critical_section.c
-HOST_CFLAGS := -Iinclude -DAERORTOS_HOST_TEST -std=c11 -O0 -g3 -fno-builtin \
+	kernel/monitor.c arch/cortex_m4/port.c arch/cortex_m4/critical_section.c \
+	arch/cortex_m4/cycle_counter.c
+HOST_CFLAGS := -Iinclude -DAERORTOS_HOST_TEST -DAERORTOS_ENABLE_TIMING \
+	-std=c11 -O0 -g3 -fno-builtin \
 	-Wall -Wextra -Werror -Wshadow -Wconversion -Wdouble-promotion \
 	-Wformat=2 -Wundef -Wstrict-prototypes -Wmissing-prototypes
 
 .PHONY: all clean test test-sanitize verify verify-critical-assembly \
-	m5-hardware-test m6-hardware-test m7-hardware-test m8-hardware-test flash \
-	flash-m5-test flash-m6-test flash-m7-test flash-m8-test openocd gdb \
-	gdb-m5-test gdb-m6-test gdb-m7-test gdb-m8-test
+	m5-hardware-test m6-hardware-test m7-hardware-test m8-hardware-test \
+	m9-hardware-test flash flash-m5-test flash-m6-test flash-m7-test \
+	flash-m8-test flash-m9-test openocd gdb gdb-m5-test gdb-m6-test \
+	gdb-m7-test gdb-m8-test gdb-m9-test m10-hardware-test flash-m10-test \
+	gdb-m10-test
 
 all: $(BUILD_DIR)/$(PROJECT).elf $(BUILD_DIR)/$(PROJECT).bin
 
@@ -145,6 +171,22 @@ $(BUILD_DIR)/m8-hw/%.o: %.c
 $(BUILD_DIR)/m8-hw/%.o: %.S
 	@mkdir -p $(@D)
 	$(CC) $(CPPFLAGS) $(ASFLAGS) -MMD -MP -c $< -o $@
+
+$(BUILD_DIR)/m9-hw/%.o: %.c
+	@mkdir -p $(@D)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -MMD -MP -c $< -o $@
+
+$(BUILD_DIR)/m9-hw/%.o: %.S
+	@mkdir -p $(@D)
+	$(CC) $(CPPFLAGS) $(ASFLAGS) -MMD -MP -c $< -o $@
+
+$(BUILD_DIR)/m10-hw/%.o: %.c
+	@mkdir -p $(@D)
+	$(CC) $(CPPFLAGS) -DAERORTOS_ENABLE_TIMING $(CFLAGS) -MMD -MP -c $< -o $@
+
+$(BUILD_DIR)/m10-hw/%.o: %.S
+	@mkdir -p $(@D)
+	$(CC) $(CPPFLAGS) -DAERORTOS_ENABLE_TIMING $(ASFLAGS) -MMD -MP -c $< -o $@
 
 $(BUILD_DIR)/m5_hw_test.elf: $(M5_HW_OBJECTS) linker/stm32f446re.ld
 	$(CC) $(M5_HW_OBJECTS) $(LDFLAGS_BASE) \
@@ -216,12 +258,53 @@ m8-hardware-test: $(BUILD_DIR)/m8_hw_test.elf $(BUILD_DIR)/m8_hw_test.bin
 	$(OBJDUMP) -d --disassemble=aerortos_mutex_lock \
 		$(BUILD_DIR)/m8_hw_test.elf
 
+$(BUILD_DIR)/m9_hw_test.elf: $(M9_HW_OBJECTS) linker/stm32f446re.ld
+	$(CC) $(M9_HW_OBJECTS) $(LDFLAGS_BASE) \
+		-Wl,-Map=$(BUILD_DIR)/m9_hw_test.map -Wl,--print-memory-usage -o $@
+	$(SIZE) $@
+
+$(BUILD_DIR)/m9_hw_test.bin: $(BUILD_DIR)/m9_hw_test.elf
+	$(OBJCOPY) -O binary $< $@
+
+m9-hardware-test: $(BUILD_DIR)/m9_hw_test.elf $(BUILD_DIR)/m9_hw_test.bin
+	$(NM) -n $(BUILD_DIR)/m9_hw_test.elf | grep -E \
+		'(SVC_Handler|PendSV_Handler|SysTick_Handler|aerortos_m9_hw_(pass_count|fail_count|complete|trace))$$'
+	test "$$($(NM) -n $(BUILD_DIR)/m9_hw_test.elf | awk '$$3 == "SysTick_Handler" {print $$1}')" != \
+		"$$($(NM) -n $(BUILD_DIR)/m9_hw_test.elf | awk '$$3 == "Default_Handler" {print $$1}')"
+	test -z "$$($(NM) -u $(BUILD_DIR)/m9_hw_test.elf)"
+	! $(NM) -u $(BUILD_DIR)/m9-hw/kernel/queue.o | grep -E \
+		'(malloc|calloc|realloc|free|memcpy|memset)'
+	! $(NM) -u $(BUILD_DIR)/m9-hw/kernel/mutex.o | grep -E \
+		'(malloc|calloc|realloc|free|memcpy|memset)'
+	$(OBJDUMP) -d --disassemble=SysTick_Handler \
+		$(BUILD_DIR)/m9_hw_test.elf
+
+$(BUILD_DIR)/m10_hw_test.elf: $(M10_HW_OBJECTS) linker/stm32f446re.ld
+	$(CC) $(M10_HW_OBJECTS) $(LDFLAGS_BASE) \
+		-Wl,-Map=$(BUILD_DIR)/m10_hw_test.map -Wl,--print-memory-usage -o $@
+	$(SIZE) $@
+
+$(BUILD_DIR)/m10_hw_test.bin: $(BUILD_DIR)/m10_hw_test.elf
+	$(OBJCOPY) -O binary $< $@
+
+m10-hardware-test: $(BUILD_DIR)/m10_hw_test.elf $(BUILD_DIR)/m10_hw_test.bin
+	$(NM) -n $(BUILD_DIR)/m10_hw_test.elf | grep -E \
+		'(SVC_Handler|PendSV_Handler|SysTick_Handler|aerortos_m10_hw_(pass_count|fail_count|complete)|aerortos_monitor_data)$$'
+	test "$$($(NM) -n $(BUILD_DIR)/m10_hw_test.elf | awk '$$3 == "SysTick_Handler" {print $$1}')" != \
+		"$$($(NM) -n $(BUILD_DIR)/m10_hw_test.elf | awk '$$3 == "Default_Handler" {print $$1}')"
+	test -z "$$($(NM) -u $(BUILD_DIR)/m10_hw_test.elf)"
+	! $(NM) -u $(BUILD_DIR)/m10-hw/kernel/monitor.o | grep -E \
+		'(malloc|calloc|realloc|free|printf)'
+	$(OBJDUMP) -d --disassemble=PendSV_Handler \
+		$(BUILD_DIR)/m10_hw_test.elf
+
 $(BUILD_DIR)/host/%_test: tests/%_test.c $(HOST_COMMON_SOURCES) include/aerortos/task.h \
 	include/aerortos/port.h include/aerortos/tcb_offsets.h \
 	include/aerortos/platform.h include/aerortos/scheduler.h \
 	include/aerortos/critical_section.h include/aerortos/timer.h \
 	include/aerortos/deadline.h include/aerortos/queue.h \
-	include/aerortos/mutex.h
+	include/aerortos/mutex.h include/aerortos/cycle_counter.h \
+	include/aerortos/monitor.h
 	@mkdir -p $(@D)
 	$(HOST_CC) $(HOST_CFLAGS) $< $(HOST_COMMON_SOURCES) -o $@
 
@@ -233,7 +316,8 @@ $(BUILD_DIR)/host/%_test_sanitized: tests/%_test.c $(HOST_COMMON_SOURCES) includ
 	include/aerortos/platform.h include/aerortos/scheduler.h \
 	include/aerortos/critical_section.h include/aerortos/timer.h \
 	include/aerortos/deadline.h include/aerortos/queue.h \
-	include/aerortos/mutex.h
+	include/aerortos/mutex.h include/aerortos/cycle_counter.h \
+	include/aerortos/monitor.h
 	@mkdir -p $(@D)
 	$(HOST_CC) $(HOST_CFLAGS) -O1 -fno-omit-frame-pointer -fno-pie -no-pie \
 		-fsanitize=address,undefined $< $(HOST_COMMON_SOURCES) -o $@
@@ -280,6 +364,14 @@ flash-m8-test: m8-hardware-test
 	$(OPENOCD) -f interface/stlink.cfg -f target/stm32f4x.cfg \
 		-c "program $(BUILD_DIR)/m8_hw_test.elf verify reset exit"
 
+flash-m9-test: m9-hardware-test
+	$(OPENOCD) -f interface/stlink.cfg -f target/stm32f4x.cfg \
+		-c "program $(BUILD_DIR)/m9_hw_test.elf verify reset exit"
+
+flash-m10-test: m10-hardware-test
+	$(OPENOCD) -f interface/stlink.cfg -f target/stm32f4x.cfg \
+		-c "program $(BUILD_DIR)/m10_hw_test.elf verify reset exit"
+
 openocd:
 	$(OPENOCD) -f interface/stlink.cfg -f target/stm32f4x.cfg
 
@@ -313,7 +405,20 @@ gdb-m8-test: m8-hardware-test
 		-ex "monitor reset halt" \
 		-ex "break aerortos_m8_hw_test_complete_marker"
 
+gdb-m9-test: m9-hardware-test
+	$(GDB) $(BUILD_DIR)/m9_hw_test.elf \
+		-ex "target extended-remote :3333" \
+		-ex "monitor reset halt" \
+		-ex "break aerortos_m9_hw_test_complete_marker"
+
+gdb-m10-test: m10-hardware-test
+	$(GDB) $(BUILD_DIR)/m10_hw_test.elf \
+		-ex "target extended-remote :3333" \
+		-ex "monitor reset halt" \
+		-ex "break aerortos_m10_hw_test_complete_marker"
+
 clean:
 	rm -rf $(BUILD_DIR)
 
--include $(DEPS) $(M5_HW_DEPS) $(M6_HW_DEPS) $(M7_HW_DEPS) $(M8_HW_DEPS)
+-include $(DEPS) $(M5_HW_DEPS) $(M6_HW_DEPS) $(M7_HW_DEPS) $(M8_HW_DEPS) \
+	$(M9_HW_DEPS) $(M10_HW_DEPS)
