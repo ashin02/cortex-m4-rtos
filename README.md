@@ -1,12 +1,12 @@
-# AeroRTOS
+# Preemptive RTOS for Cortex-M4
 
-AeroRTOS is a compact, bare-metal real-time operating system for the
-STM32F446RE (ARM Cortex-M4F). It is implemented in freestanding C and ARM Thumb-2
-assembly to demonstrate the mechanisms behind a fixed-priority preemptive kernel:
+This project implements a compact, bare-metal RTOS for the STM32F446RE
+(ARM Cortex-M4F) using freestanding C and ARM Thumb-2 assembly.
+It demonstrates the mechanisms behind a fixed-priority preemptive kernel:
 exception-driven context switching, deterministic resource bounds, interrupt-safe
 state transitions, priority inheritance, and cycle-level timing measurement.
 
-AeroRTOS targets the ST NUCLEO-F446RE without a vendor HAL,
+The kernel targets the ST NUCLEO-F446RE without a vendor HAL,
 dynamic allocation, libc runtime dependency, or another RTOS.
 It favors small, auditable resource bounds over broad API coverage.
 
@@ -144,8 +144,8 @@ protection, and coverage while enabling its timing and dynamic-interrupt support
 | FreeRTOS 10.4.4 | STM32F429ZIT6, RTOSBench, 1,000 runs | 223 cycles | Cooperative yield to next-task execution; [UL Solutions report](https://www.ul.com/sis/blog/measuring-real-time-operating-system-performance-part-ii-comparing-freertos-vs-zephyr) |
 | Zephyr 2.6.0 | STM32F429ZIT6, RTOSBench, 1,000 runs | 524 cycles | Cooperative yield to next-task execution; [UL Solutions report](https://www.ul.com/sis/blog/measuring-real-time-operating-system-performance-part-ii-comparing-freertos-vs-zephyr) |
 
-These published values are reference context, separate from the AeroRTOS tables.
-AeroRTOS uses a different STM32, firmware configuration, and measurement boundary:
+These published values are provided as references, separate from the measurements above.
+The custom kernel uses a different STM32, firmware configuration, and measurement boundary:
 its PendSV interval excludes hardware exception entry/return and does not extend to
 the first resumed task instruction. RTOSBench measures an end-to-end cooperative
 yield. Compiler/build conditions and instrumentation also differ, so the results
